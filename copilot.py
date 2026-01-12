@@ -560,8 +560,8 @@ class CoPilotApp:
         button_frame = ttk.Frame(frame)
         button_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Button(button_frame, text="Reload Today's Log", 
-                   command=self.reload_todays_log).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Reload Contest Log", 
+                   command=self.reload_contest_log).pack(side=tk.LEFT, padx=5)
         
         ttk.Button(button_frame, text="Open ADIF Log Folder", 
                    command=self.open_adif_folder).pack(side=tk.LEFT, padx=5)
@@ -638,87 +638,150 @@ class CoPilotApp:
         else:
             subprocess.Popen(['xdg-open', log_dir])
     
-    def reload_todays_log(self):
-        """Reload today's ADIF log to restore QSO tracking after restart"""
+    def reload_contest_log(self):
+        """Reload ADIF logs from contest period to restore QSO tracking after restart
+        
+        Loads all ADIF files from the last 4 days to cover a full contest weekend.
+        Tracks QSOs by (my_grid, band, their_call) to properly handle rover dupes.
+        """
         import re
-        from datetime import datetime
+        import glob
+        from datetime import datetime, timedelta
         
-        # Find today's ADIF file
         log_dir = os.path.join(os.path.dirname(__file__), 'logs')
-        today = datetime.now().strftime('%Y%m%d')
-        adif_path = os.path.join(log_dir, f'n5zy_copilot_{today}.adi')
         
-        if not os.path.exists(adif_path):
-            self.add_alert(f"No log file for today: {today}")
-            self.voice.announce("No log file found for today")
+        if not os.path.exists(log_dir):
+            self.add_alert("No logs directory found")
+            self.voice.announce("No logs directory found")
             return
         
+        # Find all ADIF files from the last 4 days (covers full contest weekend)
+        adif_files = []
+        today = datetime.now()
+        for days_ago in range(4):  # Today + 3 previous days
+            date_str = (today - timedelta(days=days_ago)).strftime('%Y%m%d')
+            adif_path = os.path.join(log_dir, f'n5zy_copilot_{date_str}.adi')
+            if os.path.exists(adif_path):
+                adif_files.append(adif_path)
+        
+        if not adif_files:
+            self.add_alert("No recent log files found (last 4 days)")
+            self.voice.announce("No recent log files found")
+            return
+        
+        # Sort by date (oldest first so we process in chronological order)
+        adif_files.sort()
+        
         try:
-            with open(adif_path, 'r') as f:
-                content = f.read()
-            
             # Clear current display
             self.clear_qso_display()
             
-            # Parse ADIF records
-            records = re.split(r'<eor>|<EOR>', content, flags=re.IGNORECASE)
+            # Reset QSY Advisor tracking
+            if self.qsy_advisor:
+                self.qsy_advisor.start_contest()
             
             qso_count = 0
-            for record in records:
-                if not record.strip():
-                    continue
+            files_loaded = 0
+            
+            for adif_path in adif_files:
+                with open(adif_path, 'r') as f:
+                    content = f.read()
                 
-                # Extract fields
-                call_match = re.search(r'<call:(\d+)>([^<]+)', record, re.IGNORECASE)
-                band_match = re.search(r'<band:(\d+)>([^<]+)', record, re.IGNORECASE)
-                mode_match = re.search(r'<mode:(\d+)>([^<]+)', record, re.IGNORECASE)
-                gridsquare_match = re.search(r'<gridsquare:(\d+)>([^<]+)', record, re.IGNORECASE)
-                my_grid_match = re.search(r'<my_gridsquare:(\d+)>([^<]+)', record, re.IGNORECASE)
-                time_match = re.search(r'<time_on:(\d+)>([^<]+)', record, re.IGNORECASE)
+                # Parse ADIF records
+                records = re.split(r'<eor>|<EOR>', content, flags=re.IGNORECASE)
                 
-                if call_match:
-                    callsign = call_match.group(2).strip()
-                    band = band_match.group(2).strip() if band_match else "?"
-                    mode = mode_match.group(2).strip() if mode_match else "?"
-                    their_grid = gridsquare_match.group(2).strip() if gridsquare_match else ""
-                    my_grid = my_grid_match.group(2).strip() if my_grid_match else ""
-                    time_str = time_match.group(2).strip() if time_match else ""
+                for record in records:
+                    if not record.strip():
+                        continue
                     
-                    # Format time for display
-                    if len(time_str) >= 4:
-                        time_display = f"{time_str[:2]}:{time_str[2:4]}"
-                    else:
-                        time_display = time_str
+                    # Extract fields
+                    call_match = re.search(r'<call:(\d+)>([^<]+)', record, re.IGNORECASE)
+                    band_match = re.search(r'<band:(\d+)>([^<]+)', record, re.IGNORECASE)
+                    mode_match = re.search(r'<mode:(\d+)>([^<]+)', record, re.IGNORECASE)
+                    gridsquare_match = re.search(r'<gridsquare:(\d+)>([^<]+)', record, re.IGNORECASE)
+                    my_grid_match = re.search(r'<my_gridsquare:(\d+)>([^<]+)', record, re.IGNORECASE)
+                    time_match = re.search(r'<time_on:(\d+)>([^<]+)', record, re.IGNORECASE)
+                    date_match = re.search(r'<qso_date:(\d+)>([^<]+)', record, re.IGNORECASE)
                     
-                    # Add to display
-                    self.qso_tree.insert('', 'end', values=(
-                        time_display,
-                        callsign,
-                        their_grid,
-                        band,
-                        mode,
-                        my_grid[:4] if my_grid else ""
-                    ))
-                    qso_count += 1
+                    if call_match:
+                        callsign = call_match.group(2).strip()
+                        band = band_match.group(2).strip() if band_match else "?"
+                        mode = mode_match.group(2).strip() if mode_match else "?"
+                        their_grid = gridsquare_match.group(2).strip() if gridsquare_match else ""
+                        my_grid = my_grid_match.group(2).strip() if my_grid_match else ""
+                        time_str = time_match.group(2).strip() if time_match else ""
+                        date_str = date_match.group(2).strip() if date_match else ""
+                        
+                        # Format time for display (include date for multi-day)
+                        if len(time_str) >= 4:
+                            time_display = f"{time_str[:2]}:{time_str[2:4]}"
+                        else:
+                            time_display = time_str
+                        
+                        # Add date prefix if we have multiple days
+                        if date_str and len(adif_files) > 1:
+                            # Show as MM-DD HH:MM
+                            if len(date_str) >= 8:
+                                time_display = f"{date_str[4:6]}-{date_str[6:8]} {time_display}"
+                        
+                        # Add to display
+                        self.qso_tree.insert('', 'end', values=(
+                            time_display,
+                            callsign,
+                            their_grid,
+                            band,
+                            mode,
+                            my_grid[:4] if my_grid else ""
+                        ))
+                        
+                        # Update QSY Advisor tracking (per-grid tracking)
+                        if self.qsy_advisor and my_grid:
+                            # Convert band string to MHz for QSY Advisor
+                            band_mhz = self._band_to_mhz(band)
+                            if band_mhz:
+                                self.qsy_advisor.log_qso(callsign, band_mhz, 
+                                                        grid=their_grid, 
+                                                        my_grid=my_grid,
+                                                        suppress_alert=True)
+                        
+                        qso_count += 1
+                
+                files_loaded += 1
             
             # Update count
             self.qso_count = qso_count
             self.qso_count_var.set(f"QSOs: {qso_count}")
             
-            # Reload QSY Advisor tracking
-            if self.qsy_advisor:
-                self.qsy_advisor.reload_from_adif(adif_path, self.current_grid)
+            # Restore current grid
+            if self.qsy_advisor and self.current_grid:
+                self.qsy_advisor.set_my_grid(self.current_grid)
             
             # Scroll to bottom to show latest
             if self.qso_tree.get_children():
                 self.qso_tree.see(self.qso_tree.get_children()[-1])
             
-            self.add_alert(f"Reloaded {qso_count} QSOs from today's log")
-            self.voice.announce(f"Reloaded {qso_count} QSOs")
+            self.add_alert(f"Reloaded {qso_count} QSOs from {files_loaded} log file(s)")
+            self.voice.announce(f"Reloaded {qso_count} QSOs from {files_loaded} days")
             
         except Exception as e:
-            self.add_alert(f"Error reloading log: {e}")
-            self.voice.announce("Error reloading log file")
+            self.add_alert(f"Error reloading logs: {e}")
+            self.voice.announce("Error reloading logs")
+    
+    def _band_to_mhz(self, band_str):
+        """Convert ADIF band string to MHz for QSY Advisor"""
+        band_map = {
+            '6m': '50', '6M': '50',
+            '2m': '144', '2M': '144',
+            '1.25m': '222', '1.25M': '222',
+            '70cm': '432', '70CM': '432',
+            '33cm': '902', '33CM': '902',
+            '23cm': '1296', '23CM': '1296',
+            '13cm': '2304', '13CM': '2304',
+            '9cm': '3456', '9CM': '3456',
+            '6cm': '5760', '6CM': '5760',
+            '3cm': '10368', '3CM': '10368',
+        }
+        return band_map.get(band_str.strip())
     
     def clear_qso_display(self):
         """Clear the QSO display (does not affect ADIF file)"""
