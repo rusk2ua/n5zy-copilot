@@ -1,163 +1,2770 @@
 {
   "K5QE": {
-    "bands": ["50", "144", "222", "432", "902", "1296", "2304", "3456", "5760", "10368"],
-    "grids": ["EM31"],
-    "last_seen": "2025-09",
-    "contests": ["Jan 2025", "Jun 2025", "Sep 2025"],
-    "notes": "East Texas superstation - has EVERYTHING"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "3456",
+      "5760",
+      "10G",
+      "10368"
+    ],
+    "grids": [
+      "EM31"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jan 2025",
+      "Jun 2025",
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "East Texas superstation"
   },
   "W5LUA": {
-    "bands": ["50", "144", "222", "432", "902", "1296", "2304", "3456", "5760", "10368"],
-    "grids": ["EM13"],
-    "last_seen": "2025-09",
-    "contests": ["Jan 2025", "Jun 2025", "Sep 2025"],
-    "notes": "Major microwave station"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "3456",
+      "5760",
+      "10G",
+      "10368"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jan 2025",
+      "Jun 2025",
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Microwave pioneer"
   },
   "K5TR": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM00"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "10G"
+    ],
+    "grids": [
+      "EM00"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "Central Texas"
   },
   "N5DG": {
-    "bands": ["50", "144", "222", "432"],
-    "grids": ["EM12"],
-    "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
-    "notes": "Dallas area"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM12",
+      "EM00"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "South Texas"
   },
   "WA5LFD": {
-    "bands": ["50", "144", "222", "432"],
-    "grids": ["EM12"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "North Texas"
   },
   "W5ZN": {
-    "bands": ["50", "144", "432", "1296"],
-    "grids": ["EM35"],
+    "bands": [
+      "50",
+      "144",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "EM35"
+    ],
     "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
+    "contests": [
+      "Sep 2025"
+    ],
     "notes": "Arkansas"
   },
   "K5CM": {
-    "bands": ["50", "144", "222", "432", "902", "1296"],
-    "grids": ["EM25"],
-    "last_seen": "2025-09",
-    "contests": ["Jan 2025", "Sep 2025"],
-    "notes": "Oklahoma"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304"
+    ],
+    "grids": [
+      "EM25"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jan 2025",
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Central OK"
   },
   "WQ5S": {
-    "bands": ["50", "144", "222", "432"],
-    "grids": ["EM15"],
-    "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM15",
+      "EM35"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "Oklahoma"
   },
   "N5LBZ": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM04"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "West Texas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM36"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Oklahoma panhandle area"
   },
   "AF5Q": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM04", "EM14"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "Rover - Texas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "North Texas"
   },
   "W5PR": {
-    "bands": ["50", "144", "222", "432"],
-    "grids": ["EL29"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "South Texas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "EM20"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "West Texas multi-band"
   },
   "KG5VK": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM20"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "Texas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Dallas area"
   },
   "N0LD": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM25", "EM26"],
-    "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "EM25",
+      "EM26",
+      "EM15",
+      "EM24"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "Oklahoma"
   },
   "WD5USA": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM04"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "Texas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM04",
+      "EM22"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Oklahoma"
   },
   "K5ND": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM01"],
-    "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902"
+    ],
+    "grids": [
+      "EM01"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "Portable ops - Central Texas"
   },
   "W9RM": {
-    "bands": ["50", "144", "432", "1296"],
-    "grids": ["DM79"],
-    "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
-    "notes": "Colorado - good path to OK/TX"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "10G"
+    ],
+    "grids": [
+      "EN52"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Midwest"
   },
   "K0GU": {
-    "bands": ["50", "144", "222", "432", "902", "1296"],
-    "grids": ["DM79"],
-    "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "DM79"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "Colorado"
   },
   "W0ZQ": {
-    "bands": ["50", "144", "222", "432"],
-    "grids": ["EM29"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "Kansas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Nebraska"
   },
   "N0JK": {
-    "bands": ["50", "144"],
-    "grids": ["EM28"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "Kansas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM28"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Kansas rover legend"
   },
   "K9JK": {
-    "bands": ["50", "144", "222", "432", "902", "1296"],
-    "grids": ["EN52"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "Major rover - travels multiple grids"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EN52",
+      "EN51",
+      "EN61",
+      "EN62"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "Midwest rover"
   },
   "W0UC": {
-    "bands": ["50", "144", "222", "432", "902", "1296", "2304"],
-    "grids": ["DM79"],
-    "last_seen": "2025-09",
-    "contests": ["Sep 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "3456",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "EN44"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Sep 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "Colorado - microwave capable"
   },
   "N5JEH": {
-    "bands": ["50", "144", "432"],
-    "grids": ["EM12"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM12",
+      "EM13"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
     "notes": "Dallas area"
   },
   "K5TRA": {
-    "bands": ["50", "144", "222", "432"],
-    "grids": ["EM10"],
-    "last_seen": "2025-06",
-    "contests": ["Jun 2025"],
-    "notes": "Central Texas"
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "3456",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "EM10",
+      "EM20"
+    ],
+    "last_seen": "2026-01-12",
+    "contests": [
+      "Jun 2025",
+      "Jun VHF 2025"
+    ],
+    "notes": "West Texas microwave"
+  },
+  "K1TEO": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "3456",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "FN31"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N2JMH": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "FN12"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K1TO": {
+    "bands": [
+      "50"
+    ],
+    "grids": [
+      "EL87"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WB2FKO": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EL89"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N4OGW": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "FN42"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K1KG": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN42"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N5RZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM00"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N3MK": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "FM27"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N8LRG": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EN80"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KR1ST": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN21"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W2FU": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN13"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WA1PBU": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN42"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K1TR": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN42"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "XE2X": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "EL06"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K6MI": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "DM05"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WB4WXE": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM74"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "NE8P": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "EL99"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W2KV": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN20"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K5LLL": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM10"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "NJ6D": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DM12"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N7NT": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DM33"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KA6BIM": {
+    "bands": [
+      "50"
+    ],
+    "grids": [
+      "CN84"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N5KO": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "CM87"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W6BVB": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "DM14"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K9MU": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EN52"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K9CT": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN50"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N8HRZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EN80"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N4SV": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM66"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WN3A": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN10"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "NR2C": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN03"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AG6X": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DM12"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "NF3R": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN20"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K6JO": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DM13"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N2WK": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN03"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KA2ENE": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN13"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N2SCJ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FM29"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "VE3VHF": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN03"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AF1T": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304"
+    ],
+    "grids": [
+      "FN43"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "VE3KH": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "3456",
+      "5760",
+      "10G",
+      "24G",
+      "47G",
+      "78G"
+    ],
+    "grids": [
+      "FN03"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WB2VVV": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN41"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WB2JAY": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN30"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KG9AP": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM59"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K7MWD": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "DM44"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KF4VTT": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "FM13"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KN6OKY": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "DM12"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W7JET": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DM43"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KO9A": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EN52"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5TRL": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM10"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K2PS": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EL98"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WQ5L": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM50"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K1HC": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "FN53"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AA5PR": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "DL79"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K0NR": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "DM78"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "NS4T": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM73"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KW2E": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM74"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "VA2CY": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "FN46"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N1JD": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "FN44"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AA2A": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "FN32"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K8MR": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EN91"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WB9HFK": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EN50"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N0UI": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM38"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N7GP": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "10G"
+    ],
+    "grids": [
+      "DM31",
+      "DM32",
+      "DM33",
+      "DM34",
+      "DM35",
+      "DM42",
+      "DM43",
+      "DM44"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "NV4B": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304"
+    ],
+    "grids": [
+      "EM43",
+      "EM44",
+      "EM45",
+      "EM46",
+      "EM47",
+      "EM48",
+      "EM53",
+      "EM54",
+      "EM55",
+      "EM56",
+      "EM57",
+      "EM58",
+      "EM64",
+      "EM65",
+      "EM66",
+      "EM67",
+      "EM68",
+      "EM74",
+      "EM75",
+      "EM76",
+      "EM77",
+      "EM78"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "VE3OIL": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "EN81",
+      "EN82",
+      "EN92",
+      "EN93",
+      "FN02",
+      "FN03",
+      "FN04",
+      "FN13",
+      "FN14"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AG4V": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM44",
+      "EM45",
+      "EM54",
+      "EM55"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K2QO": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN02",
+      "FN03",
+      "FN12",
+      "FN13",
+      "FN22",
+      "FN23"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N5ZY": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "902"
+    ],
+    "grids": [
+      "EM25",
+      "EM26",
+      "EM35"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KF2MR": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN02",
+      "FN13"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "VA3ELE": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN92",
+      "EN93",
+      "FN02",
+      "FN03",
+      "FN04",
+      "FN13",
+      "FN14"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W0AUS": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "EN23",
+      "EN24",
+      "EN33",
+      "EN34",
+      "EN43",
+      "EN44"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K2ET": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN02",
+      "FN03",
+      "FN12",
+      "FN13"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KA5D": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EL08",
+      "EL09",
+      "EL18",
+      "EL19",
+      "EM00",
+      "EM01",
+      "EM10",
+      "EM11"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KG9OV": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM47",
+      "EM49",
+      "EM59",
+      "EN40",
+      "EN50"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5TN": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EL08",
+      "EL09",
+      "EL18",
+      "EL19",
+      "EM00",
+      "EM01",
+      "EM10",
+      "EM11"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N6GP": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "10G"
+    ],
+    "grids": [
+      "DM03",
+      "DM04",
+      "DM13",
+      "DM14"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KC9NJZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN51",
+      "EN52",
+      "EN61",
+      "EN62"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5HI": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM03",
+      "EM04",
+      "EM12",
+      "EM13",
+      "EM14"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KK6MC": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DM32",
+      "DM33",
+      "DM41",
+      "DM42",
+      "DM43",
+      "DM44",
+      "DM52",
+      "DM62",
+      "DM63",
+      "DM64",
+      "DM65"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WR7X": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DN04",
+      "DN05",
+      "DN14",
+      "DN15"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K4CNY": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM43",
+      "EM44",
+      "EM45",
+      "EM46",
+      "EM47",
+      "EM48",
+      "EM53",
+      "EM54",
+      "EM55",
+      "EM56",
+      "EM57",
+      "EM58",
+      "EM64",
+      "EM65",
+      "EM66",
+      "EM67",
+      "EM68",
+      "EM74",
+      "EM75",
+      "EM76",
+      "EM77",
+      "EM78"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AA9RK": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN51",
+      "EN52",
+      "EN61",
+      "EN62"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N2NT": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "FN20"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AA4ZZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM96"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K5N": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "10G"
+    ],
+    "grids": [
+      "EM31"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KE8FD": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EN80"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AD4ES": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EL98"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WB9Z": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "EN60"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W2LV": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "FN21"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W3SO": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN00"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W2SZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "3456",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "FN32"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W3CCX": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "FN21"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "VE3WCC": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "FN15"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N8GA": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "EN80"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W4NH": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM84"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KD2LGX": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN13"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WD9EXD": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "10G"
+    ],
+    "grids": [
+      "EM57"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KV1J": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "5760",
+      "10G"
+    ],
+    "grids": [
+      "FN44"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N4QWZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EM66"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WE1P": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "1296"
+    ],
+    "grids": [
+      "FN22"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AA5AM": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "contests": [
+      "Jun VHF 2025"
+    ],
+    "notes": "Active on all VHF bands",
+    "last_seen": "2026-01-12"
+  },
+  "AE5FM": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WD5HJF": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K5MNZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KB5VKP": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "NN5T": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM00"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5ESE": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM10"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5OC": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5JCC": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5NZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM24"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KE5NJ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM10"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KA5WSS": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K5VIP": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM00"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K5NZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K5DHY": {
+    "bands": [
+      "50",
+      "144"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "K5EK": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM12"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KC0P": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W0RRC": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N0HZO": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N0SPN": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KB0NAV": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "DM79"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W0GHZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304",
+      "10G"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W0IZ": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AB0S": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296"
+    ],
+    "grids": [
+      "EN34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "N0POH": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "DM79"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AJ6T": {
+    "bands": [
+      "50",
+      "144",
+      "432"
+    ],
+    "grids": [
+      "EM40"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W4TM": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM64"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "AA5AU": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM34"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "WB5TUF": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM20"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "KM5RG": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM30"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5LDA": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432",
+      "902",
+      "1296",
+      "2304"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
+  },
+  "W5VY": {
+    "bands": [
+      "50",
+      "144",
+      "222",
+      "432"
+    ],
+    "grids": [
+      "EM13"
+    ],
+    "contests": [
+      "Jan VHF 2025"
+    ],
+    "notes": "",
+    "last_seen": "2026-01-12"
   }
 }
