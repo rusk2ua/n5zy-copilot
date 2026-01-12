@@ -123,25 +123,25 @@ class CoPilotApp:
         self.alerts_tab = self.create_alerts_tab(notebook)
         notebook.add(self.alerts_tab, text="Alerts")
         
-        # Tab 2: Settings
-        self.settings_tab = self.create_settings_tab(notebook)
-        notebook.add(self.settings_tab, text="Settings")
-        
-        # Tab 3: Manual Entry
+        # Tab 2: Manual Entry
         self.manual_tab = self.create_manual_entry_tab(notebook)
         notebook.add(self.manual_tab, text="Manual Entry")
         
-        # Tab 4: Test Mode
-        self.test_tab = self.create_test_tab(notebook)
-        notebook.add(self.test_tab, text="Test Mode")
-        
-        # Tab 5: QSO Log (from all WSJT-X instances)
+        # Tab 3: QSO Log (from all WSJT-X instances)
         self.qso_log_tab = self.create_qso_log_tab(notebook)
         notebook.add(self.qso_log_tab, text="QSO Log")
         
-        # QSY Advisor tab - browse station database
+        # Tab 4: QSY Advisor - browse station database
         self.qsy_tab = self.create_qsy_advisor_tab(notebook)
         notebook.add(self.qsy_tab, text="QSY Advisor")
+        
+        # Tab 5: Settings
+        self.settings_tab = self.create_settings_tab(notebook)
+        notebook.add(self.settings_tab, text="Settings")
+        
+        # Tab 6: Test Mode
+        self.test_tab = self.create_test_tab(notebook)
+        notebook.add(self.test_tab, text="Test Mode")
         
         # Bottom status bar
         control_frame = ttk.Frame(self.root)
