@@ -21,9 +21,9 @@ class QSYAdvisor:
     """
     
     # Standard VHF contest bands
-    BANDS = ['50', '144', '222', '432', '902', '1296', '2304', '3456', '5760', '10368']
+    BANDS = ['50', '144', '222', '432', '902', '1296', '2304', '3456', '5760', '10368', '24G', '47G', '78G']
     
-    # Band display names
+    # Band display names (wavelength)
     BAND_NAMES = {
         '50': '6m',
         '144': '2m', 
@@ -33,8 +33,12 @@ class QSYAdvisor:
         '1296': '23cm',
         '2304': '13cm',
         '3456': '9cm',
-        '5760': '6cm',
-        '10368': '3cm'
+        '5760': '5cm',
+        '10368': '3cm',
+        '10G': '3cm',
+        '24G': '1.2cm',
+        '47G': '6mm',
+        '78G': '4mm'
     }
     
     def __init__(self, data_dir=None):

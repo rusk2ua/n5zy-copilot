@@ -778,11 +778,20 @@ class CoPilotApp:
         
         stations = self.qsy_advisor.stations
         
+        # Band names - wavelength order (longest to shortest)
         band_names = {
             '50': '6m', '144': '2m', '222': '1.25m', '432': '70cm',
             '902': '33cm', '1296': '23cm', '2304': '13cm', '3456': '9cm',
-            '5760': '6cm', '10368': '3cm'
+            '5760': '5cm', '10368': '3cm', '10G': '3cm',
+            '24G': '1.2cm', '47G': '6mm', '78G': '4mm'
         }
+        
+        # Sort order for bands (by wavelength, longest first)
+        band_order = ['50', '144', '222', '432', '902', '1296', '2304', '3456', '5760', '10368', '10G', '24G', '47G', '78G']
+        
+        def sort_bands(bands):
+            """Sort bands by wavelength order"""
+            return sorted(bands, key=lambda b: band_order.index(b) if b in band_order else 99)
         
         filtered_count = 0
         for call, info in stations.items():
@@ -798,8 +807,9 @@ class CoPilotApp:
             if len(bands) < min_bands:
                 continue
             
-            # Convert band codes to names
-            band_str = ', '.join([band_names.get(b, b) for b in bands])
+            # Sort bands by wavelength and convert to names
+            sorted_bands = sort_bands(bands)
+            band_str = ', '.join([band_names.get(b, b) for b in sorted_bands])
             grid_str = ', '.join(grids) if grids else ''
             
             self.qsy_tree.insert('', 'end', values=(
