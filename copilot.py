@@ -139,6 +139,10 @@ class CoPilotApp:
         self.qso_log_tab = self.create_qso_log_tab(notebook)
         notebook.add(self.qso_log_tab, text="QSO Log")
         
+        # QSY Advisor tab - browse station database
+        self.qsy_tab = self.create_qsy_advisor_tab(notebook)
+        notebook.add(self.qsy_tab, text="QSY Advisor")
+        
         # Bottom status bar
         control_frame = ttk.Frame(self.root)
         control_frame.pack(fill=tk.X, padx=5, pady=2)
@@ -525,29 +529,27 @@ class CoPilotApp:
         ttk.Label(info_frame, textvariable=self.qso_count_var, font=('Arial', 10, 'bold'),
                  foreground="blue").pack(side=tk.RIGHT, padx=10)
         
-        # Treeview for QSO log
-        columns = ('time', 'call', 'grid', 'band', 'mode', 'rst_s', 'rst_r', 'source')
+        # Treeview for QSO log - optimized for rover use (MyGrid more important than RST)
+        columns = ('time', 'call', 'grid', 'band', 'mode', 'my_grid', 'source')
         self.qso_tree = ttk.Treeview(frame, columns=columns, show='headings', height=15)
         
         # Column headers
         self.qso_tree.heading('time', text='Time (UTC)')
         self.qso_tree.heading('call', text='Callsign')
-        self.qso_tree.heading('grid', text='Grid')
+        self.qso_tree.heading('grid', text='Their Grid')
         self.qso_tree.heading('band', text='Band')
         self.qso_tree.heading('mode', text='Mode')
-        self.qso_tree.heading('rst_s', text='RST Sent')
-        self.qso_tree.heading('rst_r', text='RST Rcvd')
+        self.qso_tree.heading('my_grid', text='My Grid')
         self.qso_tree.heading('source', text='Source')
         
         # Column widths
-        self.qso_tree.column('time', width=80)
+        self.qso_tree.column('time', width=90)
         self.qso_tree.column('call', width=100)
         self.qso_tree.column('grid', width=70)
         self.qso_tree.column('band', width=60)
         self.qso_tree.column('mode', width=60)
-        self.qso_tree.column('rst_s', width=60)
-        self.qso_tree.column('rst_r', width=60)
-        self.qso_tree.column('source', width=120)
+        self.qso_tree.column('my_grid', width=70)
+        self.qso_tree.column('source', width=100)
         
         # Scrollbar
         scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=self.qso_tree.yview)
@@ -595,9 +597,8 @@ class CoPilotApp:
                 qso_data['dx_grid'],
                 qso_data['band'],
                 qso_data['mode'],
-                qso_data['report_sent'],
-                qso_data['report_rcvd'],
-                qso_data['wsjtx_id']
+                self.current_grid or "",  # My Grid
+                qso_data['wsjtx_id']      # Source (which WSJT-X instance)
             ))
             
             # Add alert
@@ -638,6 +639,239 @@ class CoPilotApp:
         else:
             subprocess.Popen(['xdg-open', log_dir])
     
+    def create_qsy_advisor_tab(self, parent):
+        """Create QSY Advisor tab for browsing station band database"""
+        frame = ttk.Frame(parent)
+        
+        # Search/filter frame at top
+        search_frame = ttk.LabelFrame(frame, text="Search Stations", padding=10)
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(search_frame, text="Callsign:").grid(row=0, column=0, padx=5, pady=5)
+        self.qsy_search_var = tk.StringVar()
+        self.qsy_search_var.trace('w', self.filter_qsy_stations)
+        search_entry = ttk.Entry(search_frame, textvariable=self.qsy_search_var, width=15)
+        search_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(search_frame, text="Grid:").grid(row=0, column=2, padx=5, pady=5)
+        self.qsy_grid_filter_var = tk.StringVar()
+        self.qsy_grid_filter_var.trace('w', self.filter_qsy_stations)
+        grid_entry = ttk.Entry(search_frame, textvariable=self.qsy_grid_filter_var, width=8)
+        grid_entry.grid(row=0, column=3, padx=5, pady=5)
+        
+        ttk.Label(search_frame, text="Min Bands:").grid(row=0, column=4, padx=5, pady=5)
+        self.qsy_minbands_var = tk.StringVar(value="1")
+        minbands_spin = ttk.Spinbox(search_frame, from_=1, to=10, width=5, 
+                                    textvariable=self.qsy_minbands_var,
+                                    command=self.filter_qsy_stations)
+        minbands_spin.grid(row=0, column=5, padx=5, pady=5)
+        
+        ttk.Button(search_frame, text="Refresh", 
+                   command=self.refresh_qsy_database).grid(row=0, column=6, padx=10, pady=5)
+        
+        # Stats label
+        self.qsy_stats_var = tk.StringVar(value="Stations: 0")
+        ttk.Label(search_frame, textvariable=self.qsy_stats_var, 
+                  font=('Arial', 10, 'bold')).grid(row=0, column=7, padx=10, pady=5)
+        
+        # Station database treeview
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        columns = ('call', 'bands', 'grids', 'band_count', 'last_seen')
+        self.qsy_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=20)
+        
+        # Column headers with sorting
+        self.qsy_tree.heading('call', text='Callsign', command=lambda: self.sort_qsy_column('call'))
+        self.qsy_tree.heading('bands', text='Bands', command=lambda: self.sort_qsy_column('bands'))
+        self.qsy_tree.heading('grids', text='Grids', command=lambda: self.sort_qsy_column('grids'))
+        self.qsy_tree.heading('band_count', text='# Bands', command=lambda: self.sort_qsy_column('band_count'))
+        self.qsy_tree.heading('last_seen', text='Last Seen', command=lambda: self.sort_qsy_column('last_seen'))
+        
+        # Column widths
+        self.qsy_tree.column('call', width=100)
+        self.qsy_tree.column('bands', width=350)
+        self.qsy_tree.column('grids', width=100)
+        self.qsy_tree.column('band_count', width=70)
+        self.qsy_tree.column('last_seen', width=80)
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.qsy_tree.yview)
+        self.qsy_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.qsy_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Detail view when station selected
+        detail_frame = ttk.LabelFrame(frame, text="Station Details", padding=10)
+        detail_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.qsy_detail_var = tk.StringVar(value="Select a station to see details")
+        ttk.Label(detail_frame, textvariable=self.qsy_detail_var, 
+                  font=('Courier', 10)).pack(fill=tk.X)
+        
+        # Bind selection
+        self.qsy_tree.bind('<<TreeviewSelect>>', self.on_qsy_station_select)
+        
+        # Track sort state
+        self.qsy_sort_column = 'call'
+        self.qsy_sort_reverse = False
+        
+        # Initial load
+        self.root.after(500, self.refresh_qsy_database)
+        
+        return frame
+    
+    def refresh_qsy_database(self):
+        """Load/refresh the QSY Advisor station database"""
+        if not self.qsy_advisor:
+            return
+        
+        # Clear current
+        for item in self.qsy_tree.get_children():
+            self.qsy_tree.delete(item)
+        
+        # Get all stations from database
+        stations = self.qsy_advisor.stations
+        
+        band_names = {
+            '50': '6m', '144': '2m', '222': '1.25m', '432': '70cm',
+            '902': '33cm', '1296': '23cm', '2304': '13cm', '3456': '9cm',
+            '5760': '6cm', '10368': '3cm'
+        }
+        
+        for call, info in stations.items():
+            bands = info.get('bands', [])
+            grids = info.get('grids', [])
+            last_seen = info.get('last_seen', '')
+            
+            # Convert band codes to names
+            band_str = ', '.join([band_names.get(b, b) for b in bands])
+            grid_str = ', '.join(grids) if grids else ''
+            
+            self.qsy_tree.insert('', 'end', values=(
+                call,
+                band_str,
+                grid_str,
+                len(bands),
+                last_seen
+            ))
+        
+        self.qsy_stats_var.set(f"Stations: {len(stations)}")
+        self.filter_qsy_stations()  # Apply any filters
+    
+    def filter_qsy_stations(self, *args):
+        """Filter the QSY station display based on search criteria"""
+        if not self.qsy_advisor:
+            return
+        
+        search_call = self.qsy_search_var.get().upper().strip()
+        search_grid = self.qsy_grid_filter_var.get().upper().strip()
+        try:
+            min_bands = int(self.qsy_minbands_var.get())
+        except:
+            min_bands = 1
+        
+        # Clear current display
+        for item in self.qsy_tree.get_children():
+            self.qsy_tree.delete(item)
+        
+        stations = self.qsy_advisor.stations
+        
+        band_names = {
+            '50': '6m', '144': '2m', '222': '1.25m', '432': '70cm',
+            '902': '33cm', '1296': '23cm', '2304': '13cm', '3456': '9cm',
+            '5760': '6cm', '10368': '3cm'
+        }
+        
+        filtered_count = 0
+        for call, info in stations.items():
+            bands = info.get('bands', [])
+            grids = info.get('grids', [])
+            last_seen = info.get('last_seen', '')
+            
+            # Apply filters
+            if search_call and search_call not in call:
+                continue
+            if search_grid and not any(search_grid in g for g in grids):
+                continue
+            if len(bands) < min_bands:
+                continue
+            
+            # Convert band codes to names
+            band_str = ', '.join([band_names.get(b, b) for b in bands])
+            grid_str = ', '.join(grids) if grids else ''
+            
+            self.qsy_tree.insert('', 'end', values=(
+                call,
+                band_str,
+                grid_str,
+                len(bands),
+                last_seen
+            ))
+            filtered_count += 1
+        
+        self.qsy_stats_var.set(f"Stations: {filtered_count} / {len(stations)}")
+    
+    def sort_qsy_column(self, col):
+        """Sort QSY database by column"""
+        # Toggle sort direction if same column
+        if self.qsy_sort_column == col:
+            self.qsy_sort_reverse = not self.qsy_sort_reverse
+        else:
+            self.qsy_sort_column = col
+            self.qsy_sort_reverse = False
+        
+        # Get all items
+        items = [(self.qsy_tree.set(item, col), item) for item in self.qsy_tree.get_children('')]
+        
+        # Sort - handle numeric columns
+        if col == 'band_count':
+            items.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 0, reverse=self.qsy_sort_reverse)
+        else:
+            items.sort(key=lambda x: x[0], reverse=self.qsy_sort_reverse)
+        
+        # Rearrange items
+        for index, (val, item) in enumerate(items):
+            self.qsy_tree.move(item, '', index)
+    
+    def on_qsy_station_select(self, event):
+        """Show details for selected station"""
+        selection = self.qsy_tree.selection()
+        if not selection:
+            return
+        
+        item = selection[0]
+        call = self.qsy_tree.item(item, 'values')[0]
+        
+        if call in self.qsy_advisor.stations:
+            info = self.qsy_advisor.stations[call]
+            bands = info.get('bands', [])
+            grids = info.get('grids', [])
+            contests = info.get('contests', [])
+            notes = info.get('notes', '')
+            
+            # Check what we've worked this contest
+            worked_info = ""
+            if call in self.qsy_advisor.current_contest:
+                worked_grids = self.qsy_advisor.current_contest[call]
+                worked_parts = []
+                for grid, worked_bands in worked_grids.items():
+                    band_names = [self.qsy_advisor.BAND_NAMES.get(b, b) for b in worked_bands]
+                    worked_parts.append(f"{grid}: {', '.join(band_names)}")
+                worked_info = f"\nWorked this contest: {'; '.join(worked_parts)}"
+            
+            details = f"{call}: {len(bands)} bands | Grids: {', '.join(grids) if grids else 'Unknown'}"
+            if contests:
+                details += f" | Contests: {', '.join(contests[-3:])}"  # Last 3 contests
+            if notes:
+                details += f" | {notes}"
+            details += worked_info
+            
+            self.qsy_detail_var.set(details)
+        else:
+            self.qsy_detail_var.set(f"{call}: Not in database")
+
     def reload_contest_log(self):
         """Reload ADIF logs from contest period to restore QSO tracking after restart
         
@@ -724,6 +958,9 @@ class CoPilotApp:
                             if len(date_str) >= 8:
                                 time_display = f"{date_str[4:6]}-{date_str[6:8]} {time_display}"
                         
+                        # Determine source from filename
+                        source = os.path.basename(adif_path).replace('n5zy_copilot_', '').replace('.adi', '')
+                        
                         # Add to display
                         self.qso_tree.insert('', 'end', values=(
                             time_display,
@@ -731,7 +968,8 @@ class CoPilotApp:
                             their_grid,
                             band,
                             mode,
-                            my_grid[:4] if my_grid else ""
+                            my_grid[:4] if my_grid else "",
+                            f"ADIF:{source}"  # Source shows which log file
                         ))
                         
                         # Update QSY Advisor tracking (per-grid tracking)
