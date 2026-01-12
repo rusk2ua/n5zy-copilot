@@ -17,6 +17,7 @@ from modules.radio_updater import RadioUpdater
 from modules.log_monitor import LogMonitor
 from modules.voice_alerts import VoiceAlerter
 from modules.aprs_client import APRSClient
+from modules.qsy_advisor import QSYAdvisor
 
 class CoPilotApp:
     def __init__(self, root):
@@ -36,6 +37,8 @@ class CoPilotApp:
         self.log_monitor = None
         self.aprs_client = None
         self.voice = VoiceAlerter()
+        self.qsy_advisor = QSYAdvisor()
+        self.qsy_advisor.set_qsy_callback(self.on_qsy_opportunity)
         
         # Current state
         self.current_grid = "----"
@@ -601,6 +604,14 @@ class CoPilotApp:
             if self.voice:
                 self.voice.announce(f"QSO logged. {qso_data['dx_call']}")
             
+            # Check for QSY opportunities (other bands this station operates)
+            if self.qsy_advisor:
+                self.qsy_advisor.log_qso(
+                    qso_data['dx_call'],
+                    qso_data['band'],
+                    qso_data.get('dx_grid')
+                )
+            
             # Update status
             import datetime
             today = datetime.datetime.now().strftime('%Y%m%d')
@@ -784,6 +795,27 @@ class CoPilotApp:
             f"APRS Message from {from_call}", 
             message
         ))
+    
+    def on_qsy_opportunity(self, callsign, worked_band, available_bands, message):
+        """Called when we work a station that has other bands available"""
+        # Build voice message
+        band_names = []
+        for band in available_bands[:3]:  # Limit to first 3 bands to keep it short
+            name = self.qsy_advisor.BAND_NAMES.get(band, band)
+            band_names.append(name)
+        
+        if len(available_bands) > 3:
+            bands_str = f"{', '.join(band_names)} and more"
+        else:
+            bands_str = ' and '.join(band_names) if len(band_names) <= 2 else f"{', '.join(band_names[:-1])}, and {band_names[-1]}"
+        
+        voice_msg = f"QSY opportunity. {callsign} also has {bands_str}"
+        
+        # Add to alerts
+        self.add_alert(f"QSY: {callsign} -> {', '.join([self.qsy_advisor.BAND_NAMES.get(b, b) for b in available_bands])}", priority=True)
+        
+        # Voice announcement (delayed slightly so it comes after QSO logged)
+        self.root.after(1500, lambda: self.voice.announce(voice_msg))
     
     def on_new_decode(self, band, callsign, grid, is_new_grid, is_calling_me):
         """Called when new decode is found in WSJT-X logs"""
