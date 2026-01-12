@@ -53,14 +53,35 @@ class QSYAdvisor:
         # Station database: {callsign: {bands: set(), grids: set(), last_seen: date, contests: list}}
         self.stations = {}
         
-        # Current contest worked stations: {callsign: set(bands_worked)}
+        # Current contest worked stations: {callsign: {my_grid: set(bands_worked)}}
+        # Tracks per-grid because rovers can re-work stations in new grids!
         self.current_contest = {}
+        
+        # Current grid (4-char) - set by copilot when GPS updates
+        self.current_grid = None
         
         # Callback for QSY alerts
         self.qsy_callback = None
         
         # Load station database
         self._load_database()
+    
+    def set_my_grid(self, grid):
+        """
+        Set current operating grid (called when GPS updates)
+        
+        Args:
+            grid: 4 or 6 character grid square
+        """
+        if grid and len(grid) >= 4:
+            new_grid = grid[:4].upper()
+            if new_grid != self.current_grid:
+                old_grid = self.current_grid
+                self.current_grid = new_grid
+                if old_grid:
+                    print(f"QSY Advisor: Grid changed {old_grid} -> {new_grid}, stations can be re-worked!")
+                else:
+                    print(f"QSY Advisor: Operating from grid {new_grid}")
     
     def _load_database(self):
         """Load station database from JSON file"""
@@ -198,7 +219,7 @@ class QSYAdvisor:
         
         return call
     
-    def log_qso(self, callsign, band, grid=None):
+    def log_qso(self, callsign, band, grid=None, my_grid=None, suppress_alert=False):
         """
         Log a QSO and check for QSY opportunities
         
@@ -206,6 +227,8 @@ class QSYAdvisor:
             callsign: Worked station callsign
             band: Band worked (e.g., '144' or '2m')
             grid: Their grid (optional)
+            my_grid: My grid for this QSO (optional, uses current_grid if not specified)
+            suppress_alert: If True, don't trigger callback (used during reload)
             
         Returns:
             dict with QSY info or None if no suggestion
@@ -216,19 +239,33 @@ class QSYAdvisor:
         # Normalize callsign
         base_call = self._normalize_call(callsign)
         
-        # Track this QSO
-        if base_call not in self.current_contest:
-            self.current_contest[base_call] = set()
+        # Determine which grid to use for tracking
+        tracking_grid = my_grid[:4].upper() if my_grid else self.current_grid
+        if not tracking_grid:
+            tracking_grid = "UNKN"  # Fallback if no grid set
         
-        self.current_contest[base_call].add(band)
+        # Track this QSO - structure is {callsign: {grid: set(bands)}}
+        if base_call not in self.current_contest:
+            self.current_contest[base_call] = {}
+        
+        if tracking_grid not in self.current_contest[base_call]:
+            self.current_contest[base_call][tracking_grid] = set()
+        
+        self.current_contest[base_call][tracking_grid].add(band)
+        
+        # Don't alert if suppressed (during reload)
+        if suppress_alert:
+            return None
         
         # Check if we know this station
         if base_call in self.stations:
             station_info = self.stations[base_call]
             known_bands = station_info['bands']
-            worked_bands = self.current_contest[base_call]
             
-            # Find bands they have that we haven't worked them on yet
+            # Only consider bands worked in THIS grid
+            worked_bands = self.current_contest[base_call].get(tracking_grid, set())
+            
+            # Find bands they have that we haven't worked them on yet (in this grid)
             available_bands = known_bands - worked_bands
             
             if available_bands:
@@ -304,15 +341,23 @@ class QSYAdvisor:
         
         return None
     
-    def get_unworked_bands(self, callsign):
-        """Get bands a station has that we haven't worked them on yet"""
+    def get_unworked_bands(self, callsign, my_grid=None):
+        """Get bands a station has that we haven't worked them on yet (in current grid)"""
         base_call = self._normalize_call(callsign)
         
         if base_call not in self.stations:
             return []
         
+        # Use specified grid or current grid
+        tracking_grid = my_grid[:4].upper() if my_grid else self.current_grid
+        if not tracking_grid:
+            tracking_grid = "UNKN"
+        
         known_bands = self.stations[base_call]['bands']
-        worked_bands = self.current_contest.get(base_call, set())
+        
+        # Get bands worked in THIS grid only
+        station_grids = self.current_contest.get(base_call, {})
+        worked_bands = station_grids.get(tracking_grid, set())
         
         available = known_bands - worked_bands
         return sorted(available, key=lambda b: int(b) if b.isdigit() else 0)
@@ -415,15 +460,119 @@ class QSYAdvisor:
             num_bands = len(info['bands'])
             band_counts[num_bands] = band_counts.get(num_bands, 0) + 1
         
-        # Count current contest
-        current_qsos = sum(len(bands) for bands in self.current_contest.values())
+        # Count current contest - structure is {callsign: {grid: set(bands)}}
+        current_qsos = 0
+        grids_worked = set()
+        for call_data in self.current_contest.values():
+            for grid, bands in call_data.items():
+                current_qsos += len(bands)
+                grids_worked.add(grid)
         
         return {
             'total_stations': total_stations,
             'band_distribution': band_counts,
             'current_contest_stations': len(self.current_contest),
-            'current_contest_qsos': current_qsos
+            'current_contest_qsos': current_qsos,
+            'current_grid': self.current_grid,
+            'grids_activated': len(grids_worked)
         }
+    
+    def reload_from_adif(self, adif_path, current_grid=None):
+        """
+        Reload QSO tracking from an ADIF file (for restart recovery)
+        
+        Args:
+            adif_path: Path to ADIF file
+            current_grid: Current operating grid (to set after reload)
+            
+        Returns:
+            Number of QSOs loaded
+        """
+        import re
+        
+        if not os.path.exists(adif_path):
+            print(f"QSY Advisor: ADIF file not found: {adif_path}")
+            return 0
+        
+        # Clear current tracking
+        self.current_contest = {}
+        
+        try:
+            with open(adif_path, 'r') as f:
+                content = f.read()
+            
+            # Parse ADIF records
+            # Each record ends with <eor> or <EOR>
+            records = re.split(r'<eor>|<EOR>', content, flags=re.IGNORECASE)
+            
+            qso_count = 0
+            for record in records:
+                if not record.strip():
+                    continue
+                
+                # Extract fields using regex
+                call_match = re.search(r'<call:(\d+)>([^<]+)', record, re.IGNORECASE)
+                band_match = re.search(r'<band:(\d+)>([^<]+)', record, re.IGNORECASE)
+                freq_match = re.search(r'<freq:(\d+)>([^<]+)', record, re.IGNORECASE)
+                my_grid_match = re.search(r'<my_gridsquare:(\d+)>([^<]+)', record, re.IGNORECASE)
+                
+                if call_match:
+                    callsign = call_match.group(2).strip()
+                    
+                    # Get band - prefer explicit band field, fall back to freq
+                    band = None
+                    if band_match:
+                        band_str = band_match.group(2).strip().lower()
+                        # Convert band string like "2m" or "70cm" to MHz
+                        band = self._normalize_band(band_str)
+                    elif freq_match:
+                        freq = float(freq_match.group(2).strip())
+                        band = self._freq_to_band(freq)
+                    
+                    # Get my grid from the QSO
+                    my_grid = None
+                    if my_grid_match:
+                        my_grid = my_grid_match.group(2).strip()[:4].upper()
+                    
+                    if band:
+                        # Log QSO with suppress_alert=True to avoid spam
+                        self.log_qso(callsign, band, my_grid=my_grid, suppress_alert=True)
+                        qso_count += 1
+            
+            # Set current grid if provided
+            if current_grid:
+                self.set_my_grid(current_grid)
+            
+            print(f"QSY Advisor: Reloaded {qso_count} QSOs from ADIF")
+            return qso_count
+            
+        except Exception as e:
+            print(f"QSY Advisor: Error loading ADIF: {e}")
+            return 0
+    
+    def _freq_to_band(self, freq_mhz):
+        """Convert frequency in MHz to band string"""
+        if 50 <= freq_mhz < 54:
+            return '50'
+        elif 144 <= freq_mhz < 148:
+            return '144'
+        elif 222 <= freq_mhz < 225:
+            return '222'
+        elif 420 <= freq_mhz < 450:
+            return '432'
+        elif 902 <= freq_mhz < 928:
+            return '902'
+        elif 1240 <= freq_mhz < 1300:
+            return '1296'
+        elif 2300 <= freq_mhz < 2450:
+            return '2304'
+        elif 3300 <= freq_mhz < 3500:
+            return '3456'
+        elif 5650 <= freq_mhz < 5925:
+            return '5760'
+        elif 10000 <= freq_mhz < 10500:
+            return '10368'
+        return None
 
 
 def parse_3830_scores(url_or_file):

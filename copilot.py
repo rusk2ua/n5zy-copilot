@@ -560,6 +560,9 @@ class CoPilotApp:
         button_frame = ttk.Frame(frame)
         button_frame.pack(fill=tk.X, padx=5, pady=5)
         
+        ttk.Button(button_frame, text="Reload Today's Log", 
+                   command=self.reload_todays_log).pack(side=tk.LEFT, padx=5)
+        
         ttk.Button(button_frame, text="Open ADIF Log Folder", 
                    command=self.open_adif_folder).pack(side=tk.LEFT, padx=5)
         
@@ -635,6 +638,88 @@ class CoPilotApp:
         else:
             subprocess.Popen(['xdg-open', log_dir])
     
+    def reload_todays_log(self):
+        """Reload today's ADIF log to restore QSO tracking after restart"""
+        import re
+        from datetime import datetime
+        
+        # Find today's ADIF file
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        today = datetime.now().strftime('%Y%m%d')
+        adif_path = os.path.join(log_dir, f'n5zy_copilot_{today}.adi')
+        
+        if not os.path.exists(adif_path):
+            self.add_alert(f"No log file for today: {today}")
+            self.voice.announce("No log file found for today")
+            return
+        
+        try:
+            with open(adif_path, 'r') as f:
+                content = f.read()
+            
+            # Clear current display
+            self.clear_qso_display()
+            
+            # Parse ADIF records
+            records = re.split(r'<eor>|<EOR>', content, flags=re.IGNORECASE)
+            
+            qso_count = 0
+            for record in records:
+                if not record.strip():
+                    continue
+                
+                # Extract fields
+                call_match = re.search(r'<call:(\d+)>([^<]+)', record, re.IGNORECASE)
+                band_match = re.search(r'<band:(\d+)>([^<]+)', record, re.IGNORECASE)
+                mode_match = re.search(r'<mode:(\d+)>([^<]+)', record, re.IGNORECASE)
+                gridsquare_match = re.search(r'<gridsquare:(\d+)>([^<]+)', record, re.IGNORECASE)
+                my_grid_match = re.search(r'<my_gridsquare:(\d+)>([^<]+)', record, re.IGNORECASE)
+                time_match = re.search(r'<time_on:(\d+)>([^<]+)', record, re.IGNORECASE)
+                
+                if call_match:
+                    callsign = call_match.group(2).strip()
+                    band = band_match.group(2).strip() if band_match else "?"
+                    mode = mode_match.group(2).strip() if mode_match else "?"
+                    their_grid = gridsquare_match.group(2).strip() if gridsquare_match else ""
+                    my_grid = my_grid_match.group(2).strip() if my_grid_match else ""
+                    time_str = time_match.group(2).strip() if time_match else ""
+                    
+                    # Format time for display
+                    if len(time_str) >= 4:
+                        time_display = f"{time_str[:2]}:{time_str[2:4]}"
+                    else:
+                        time_display = time_str
+                    
+                    # Add to display
+                    self.qso_tree.insert('', 'end', values=(
+                        time_display,
+                        callsign,
+                        their_grid,
+                        band,
+                        mode,
+                        my_grid[:4] if my_grid else ""
+                    ))
+                    qso_count += 1
+            
+            # Update count
+            self.qso_count = qso_count
+            self.qso_count_var.set(f"QSOs: {qso_count}")
+            
+            # Reload QSY Advisor tracking
+            if self.qsy_advisor:
+                self.qsy_advisor.reload_from_adif(adif_path, self.current_grid)
+            
+            # Scroll to bottom to show latest
+            if self.qso_tree.get_children():
+                self.qso_tree.see(self.qso_tree.get_children()[-1])
+            
+            self.add_alert(f"Reloaded {qso_count} QSOs from today's log")
+            self.voice.announce(f"Reloaded {qso_count} QSOs")
+            
+        except Exception as e:
+            self.add_alert(f"Error reloading log: {e}")
+            self.voice.announce("Error reloading log file")
+    
     def clear_qso_display(self):
         """Clear the QSO display (does not affect ADIF file)"""
         for item in self.qso_tree.get_children():
@@ -692,6 +777,10 @@ class CoPilotApp:
             old_grid = self.current_grid
             self.current_grid = grid
             self.grid_label.config(text=grid)
+            
+            # Update QSY Advisor with new grid (tracks per-grid for rovers!)
+            if self.qsy_advisor:
+                self.qsy_advisor.set_my_grid(grid)
             
             # Update N1MM+ buttons (main window and test tab)
             self.n1mm_button.config(text=f"Send to N1MM+: {grid}", state='normal')
