@@ -1,0 +1,21 @@
+
+
+# GPS Support
+pyserial>=3.5
+pynmea2>=1.18.0
+
+# Victron Bluetooth Support  
+bleak>=0.21.0
+victron-ble>=0.5.0
+
+# Text-to-Speech
+pyttsx3>=2.90
+
+# Keyboard automation for N1MM+
+pyautogui>=0.9.54
+
+# GUI (built into Python, but listed for completeness)
+# tkinter - included with Python on Windows
+
+# Note: WSJT-X protocol is implemented directly in radio_updater.py
+# No external library needed!
