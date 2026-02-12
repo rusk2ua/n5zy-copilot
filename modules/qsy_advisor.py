@@ -126,7 +126,8 @@ class QSYAdvisor:
                     'bands': list(info['bands']),
                     'grids': list(info['grids']),
                     'last_seen': info['last_seen'],
-                    'contests': info['contests']
+                    'contests': info.get('contests', []),
+                    'notes': info.get('notes', '')
                 }
             
             with open(db_path, 'w') as f:
@@ -134,6 +135,10 @@ class QSYAdvisor:
                 
         except Exception as e:
             print(f"QSY Advisor: Error saving database: {e}")
+    
+    def save_database(self):
+        """Public method to save the database"""
+        self._save_database()
     
     def _create_sample_database(self):
         """Create sample database with some known multi-band stations"""

@@ -43,7 +43,7 @@ def latlon_to_grid(lat, lon):
     return grid
 
 class GPSMonitor:
-    def __init__(self, port, callback, grid_precision=4):
+    def __init__(self, port, callback, grid_precision=4, lock_callback=None):
         """
         Initialize GPS monitor
         
@@ -51,9 +51,11 @@ class GPSMonitor:
             port: COM port string (e.g., 'COM3')
             callback: Function to call with (grid, lat, lon) when position updates
             grid_precision: 4 or 6 character grid precision (default 4 for VHF contests)
+            lock_callback: Function to call with (has_lock, message) when lock status changes
         """
         self.port = port
         self.callback = callback
+        self.lock_callback = lock_callback
         self.grid_precision = grid_precision
         self.running = False
         self.thread = None
@@ -101,6 +103,7 @@ class GPSMonitor:
                 # Open serial connection
                 with serial.Serial(self.port, baudrate=9600, timeout=1) as ser:
                     print(f"GPS: Connected to {self.port}")
+                    had_fix = False  # Track if we previously had a fix
                     
                     while self.running:
                         try:
@@ -110,7 +113,17 @@ class GPSMonitor:
                                 # Parse NMEA sentence
                                 msg = pynmea2.parse(line)
                                 
-                                if msg.latitude and msg.longitude:
+                                # Check fix quality (0=no fix, 1=GPS fix, 2=DGPS fix, etc.)
+                                has_fix = msg.latitude and msg.longitude and hasattr(msg, 'gps_qual') and msg.gps_qual > 0
+                                
+                                if has_fix:
+                                    if not had_fix:
+                                        # Just got a fix
+                                        print(f"GPS: Lock acquired")
+                                        if self.lock_callback:
+                                            self.lock_callback(True, "GPS lock acquired")
+                                        had_fix = True
+                                    
                                     lat = msg.latitude
                                     lon = msg.longitude
                                     
@@ -118,14 +131,26 @@ class GPSMonitor:
                                     full_grid = latlon_to_grid(lat, lon)
                                     grid = full_grid[:self.grid_precision]
                                     
-                                    # Only callback if grid changed (at configured precision)
-                                    if grid != self.current_grid:
+                                    # Always update stored position
+                                    self.current_lat = lat
+                                    self.current_lon = lon
+                                    
+                                    # Check if grid changed (for logging)
+                                    grid_changed = (grid != self.current_grid)
+                                    if grid_changed:
                                         self.current_grid = grid
-                                        self.current_lat = lat
-                                        self.current_lon = lon
-                                        
                                         print(f"GPS: Position update - {grid} ({lat:.6f}, {lon:.6f})")
-                                        self.callback(grid, lat, lon)
+                                    
+                                    # Always callback with current position
+                                    # (needed for county tracking even when grid doesn't change)
+                                    self.callback(grid, lat, lon)
+                                else:
+                                    if had_fix:
+                                        # Lost fix
+                                        print(f"GPS: Lock lost")
+                                        if self.lock_callback:
+                                            self.lock_callback(False, "GPS lock lost")
+                                        had_fix = False
                         
                         except (pynmea2.ParseError, UnicodeDecodeError) as e:
                             # Ignore parse errors, just continue

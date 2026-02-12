@@ -37,6 +37,20 @@ class LogMonitor:
         self.running = True
         self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.thread.start()
+        print("LogMonitor: Started monitoring thread")
+        
+        # Debug: show what we're monitoring
+        for instance in self.wsjt_instances:
+            log_path = instance.get('log_path', '')
+            band_name = instance.get('name', 'Unknown')
+            if log_path:
+                all_txt = Path(log_path) / 'ALL.TXT'
+                if all_txt.exists():
+                    print(f"LogMonitor: Will monitor {band_name}: {all_txt}")
+                else:
+                    print(f"LogMonitor: {band_name}: ALL.TXT not found at {all_txt}")
+            else:
+                print(f"LogMonitor: {band_name}: No log path configured")
     
     def stop(self):
         """Stop log monitoring"""
@@ -121,12 +135,21 @@ class LogMonitor:
             current_size = os.path.getsize(filepath)
             last_position = self.file_positions.get(str(filepath), 0)
             
+            # First time seeing this file? Jump to end to avoid processing old data
+            if str(filepath) not in self.file_positions:
+                self.file_positions[str(filepath)] = current_size
+                print(f"LogMonitor: {band_name}: Initialized at position {current_size}")
+                return
+            
             # Only read if file grew
             if current_size > last_position:
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                     f.seek(last_position)
                     new_lines = f.readlines()
                     self.file_positions[str(filepath)] = f.tell()
+                
+                if new_lines:
+                    print(f"LogMonitor: {band_name}: Processing {len(new_lines)} new decode(s)")
                 
                 # Process new lines
                 for line in new_lines:
@@ -135,6 +158,7 @@ class LogMonitor:
             # Handle file rotation (file got smaller)
             elif current_size < last_position:
                 self.file_positions[str(filepath)] = 0
+                print(f"LogMonitor: {band_name}: File rotated, resetting position")
         
         except Exception as e:
             print(f"LogMonitor: Error reading {filepath}: {e}")
@@ -142,25 +166,57 @@ class LogMonitor:
     def _process_decode_line(self, line, band_name):
         """Process a single decode line from ALL.TXT"""
         try:
-            # ALL.TXT format:
-            # YYMMDD HHMMSS  -## ~#.## #### @@ Msg text
-            # Example: 250110 143000 -15  0.3 1234 @ CQ K5ABC EM04
+            # WSJT-X ALL.TXT format:
+            # 210117_235900    28.076 Rx FT8    -10  0.3 1500 CQ K5ABC EM04
+            # 210117_235915    28.076 Tx FT8     0  0.0 1500 CQ N5ZY EM15
+            # YYMMDD_HHMMSS    FREQ   Rx/Tx MODE   SNR  DT  FREQ MESSAGE
             
-            # Parse the line
-            parts = line.strip().split()
-            if len(parts) < 6:
+            line = line.strip()
+            if not line:
                 return
             
-            # Extract message text (everything after frequency offset)
-            # Find the @ symbol which marks start of message
-            at_index = line.find('@')
-            if at_index == -1:
+            # Skip our own transmissions (Tx lines)
+            if ' Tx ' in line or '\tTx\t' in line or '\tTx ' in line or ' Tx\t' in line:
                 return
             
-            message = line[at_index+1:].strip()
+            # Split and find where the message starts
+            parts = line.split()
+            if len(parts) < 7:
+                return
             
-            # Look for callsign and grid patterns
-            # Common patterns: "CQ CALL GRID", "CALL GRID", "CALL CALL GRID"
+            # Extract actual frequency from line (usually 2nd field like "432.174" or "1296.174")
+            actual_freq_mhz = None
+            for part in parts[1:5]:  # Check first few fields after timestamp
+                try:
+                    freq = float(part)
+                    if 28 <= freq <= 30000:  # Valid ham frequency range in MHz
+                        actual_freq_mhz = freq
+                        break
+                except ValueError:
+                    continue
+            
+            # Find the message - look for CQ or a callsign-like pattern
+            message = None
+            for i, part in enumerate(parts):
+                # Message often starts with CQ, or a callsign
+                if part.upper() == 'CQ' or (len(part) >= 3 and any(c.isdigit() for c in part) and any(c.isalpha() for c in part)):
+                    # Check if this looks like start of FT8 message
+                    # Skip if it's clearly a number (like frequency offset)
+                    if part.replace('.', '').replace('-', '').replace('+', '').isdigit():
+                        continue
+                    # Skip mode indicators
+                    if part.upper() in ['FT8', 'FT4', 'JT65', 'JT9', 'Q65', 'MSK144', 'RX', 'TX']:
+                        continue
+                    message = ' '.join(parts[i:])
+                    break
+            
+            if not message:
+                return
+            
+            # Skip if this is OUR OWN message (we're calling CQ or responding)
+            # Check if first callsign in message is N5ZY
+            if message.upper().startswith('CQ N5ZY') or message.upper().startswith('N5ZY '):
+                return
             
             # Extract grid square (4 characters: 2 letters + 2 digits)
             grid_match = re.search(r'\b([A-R]{2}\d{2})\b', message, re.IGNORECASE)
@@ -170,8 +226,8 @@ class LogMonitor:
             grid = grid_match.group(1).upper()
             
             # Extract callsign (before the grid)
-            # Callsign pattern: alphanumeric with at least one digit
-            call_pattern = r'\b([A-Z0-9]{3,})\b'
+            # Callsign pattern: letters and numbers, 3+ chars, must have at least one letter and one digit
+            call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[A-Z][A-Z0-9]*[0-9][A-Z]+)\b'
             calls = re.findall(call_pattern, message[:grid_match.start()], re.IGNORECASE)
             
             if not calls:
@@ -180,6 +236,17 @@ class LogMonitor:
             # Last callsign before grid is usually the station
             callsign = calls[-1].upper()
             
+            # Skip if callsign is CQ or our own call
+            if callsign == 'CQ':
+                if len(calls) > 1:
+                    callsign = calls[-1].upper()
+                else:
+                    return
+            
+            # Skip our own callsign
+            if callsign == 'N5ZY':
+                return
+            
             # Check if calling me (message contains my call or directed to me)
             is_calling_me = False
             if 'N5ZY' in message.upper():
@@ -187,7 +254,7 @@ class LogMonitor:
                 if re.search(r'\b\w+\s+N5ZY\b', message, re.IGNORECASE):
                     is_calling_me = True
             
-            # Check if new grid on this band
+            # Check if new grid on this band/radio
             is_new_grid = False
             if band_name not in self.worked_grids:
                 self.worked_grids[band_name] = set()
@@ -198,31 +265,79 @@ class LogMonitor:
             
             # Callback with decode info
             if is_new_grid or is_calling_me:
-                # Extract band frequency from band name
-                band_freq = self._extract_band_freq(band_name)
-                self.callback(band_freq, callsign, grid, is_new_grid, is_calling_me)
+                # Use actual frequency from line if available, otherwise fall back to band name
+                if actual_freq_mhz:
+                    # Skip HF (below 50 MHz) - this is a VHF contest copilot
+                    if actual_freq_mhz < 50:
+                        return
+                    band_display = self._freq_to_band(actual_freq_mhz)
+                else:
+                    band_display = self._extract_band_freq(band_name)
+                print(f"LogMonitor: ALERT - {callsign} in {grid} on {band_display} (freq={actual_freq_mhz}, new_grid={is_new_grid}, calling_me={is_calling_me})")
+                self.callback(band_display, callsign, grid, is_new_grid, is_calling_me)
         
         except Exception as e:
-            print(f"LogMonitor: Error processing line '{line}': {e}")
+            print(f"LogMonitor: Error processing line: {e}")
+    
+    def _freq_to_band(self, freq_mhz):
+        """Convert frequency in MHz to band name for display"""
+        if 50 <= freq_mhz <= 54:
+            return "6m"
+        elif 144 <= freq_mhz <= 148:
+            return "2m"
+        elif 222 <= freq_mhz <= 225:
+            return "1.25m"
+        elif 420 <= freq_mhz <= 450:
+            return "70cm"
+        elif 902 <= freq_mhz <= 928:
+            return "33cm"
+        elif 1240 <= freq_mhz <= 1300:
+            return "23cm"
+        elif 2300 <= freq_mhz <= 2450:
+            return "13cm"
+        elif 3300 <= freq_mhz <= 3500:
+            return "9cm"
+        elif 5650 <= freq_mhz <= 5925:
+            return "5cm"
+        elif 10000 <= freq_mhz <= 10500:
+            return "3cm"
+        elif 28 <= freq_mhz <= 30:
+            return "10m"  # HF, not VHF but might show up
+        else:
+            return f"{freq_mhz:.1f}MHz"
     
     def _extract_band_freq(self, band_name):
-        """Extract frequency from band name"""
-        # Map band names to frequencies
+        """Extract frequency from band name for display purposes.
+        
+        Note: With radio-based instance names (like 'IC-9700'), we can't know
+        the exact band from ALL.TXT alone. This returns the first matching band
+        hint or the instance name itself.
+        """
+        # Map band names/hints to frequencies
         band_map = {
             '6m': '50',
+            'hf': 'HF',
             '2m': '144',
             '222': '222',
+            '1.25m': '222',
             '432': '432',
             '70cm': '432',
             '902': '902',
+            '33cm': '902',
             '1296': '1296',
-            '23cm': '1296'
+            '23cm': '1296',
+            '10g': '10368',
         }
         
+        name_lower = band_name.lower()
         for key, freq in band_map.items():
-            if key in band_name.lower():
+            if key in name_lower:
                 return freq
         
+        # If no band hint found, return a shortened version of the instance name
+        # e.g., "IC-7610 (6m/HF)" -> "IC-7610"
+        if '(' in band_name:
+            return band_name.split('(')[0].strip()
         return band_name
     
     def get_worked_grids(self, band):

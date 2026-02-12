@@ -1,6 +1,6 @@
 """
 Radio Updater Module
-Sends grid square updates to WSJT-X instances and N1MM+ via UDP
+Sends grid square updates to WSJT-X instances and contest loggers (N1MM+ or N3FJP) 
 
 Implements WSJT-X NetworkMessage protocol without external dependencies
 """
@@ -32,7 +32,69 @@ class RadioUpdater:
     MSG_LOGGED_ADIF = 12
     MSG_HIGHLIGHT_CALLSIGN = 13
     
-    def __init__(self, wsjt_instances, n1mm_host='127.0.0.1', n1mm_port=52001, qso_callback=None):
+    @staticmethod
+    def to_adif_latitude(latitude):
+        """
+        Convert decimal degrees to ADIF latitude format.
+        Format: N/S DDD MM.MMM (e.g., "N035 28.056")
+        """
+        hemisphere = "N" if latitude >= 0 else "S"
+        abs_lat = abs(latitude)
+        degrees = int(abs_lat)
+        minutes = (abs_lat - degrees) * 60
+        return f"{hemisphere}{degrees:03d} {minutes:06.3f}"
+    
+    @staticmethod
+    def to_adif_longitude(longitude):
+        """
+        Convert decimal degrees to ADIF longitude format.
+        Format: E/W DDD MM.MMM (e.g., "W097 30.984")
+        """
+        hemisphere = "E" if longitude >= 0 else "W"
+        abs_lon = abs(longitude)
+        degrees = int(abs_lon)
+        minutes = (abs_lon - degrees) * 60
+        return f"{hemisphere}{degrees:03d} {minutes:06.3f}"
+    
+    @staticmethod
+    def map_contest_id(contest_name):
+        """
+        Map N1MM contest name to ADIF CONTEST_ID.
+        N1MM uses various names, map to ADIF standard IDs.
+        """
+        if not contest_name:
+            return ""
+        
+        name = contest_name.upper()
+        
+        if "VHF" in name and "JAN" in name:
+            return "ARRL-VHF-JAN"
+        if "VHF" in name and "JUN" in name:
+            return "ARRL-VHF-JUN"
+        if "VHF" in name and "SEP" in name:
+            return "ARRL-VHF-SEP"
+        if "222" in name:
+            return "ARRL-222"
+        if "UHF" in name:
+            return "ARRL-UHF-AUG"
+        if "SPRINT" in name:
+            return "CSVHF-SPRINT"
+        if "OK" in name and "QSO" in name:
+            return "OK-QSO-PARTY"
+        if "CQ" in name and "VHF" in name:
+            return "CQ-VHF"
+        
+        # Return original if no mapping found
+        return contest_name
+    
+    @staticmethod
+    def is_rover_call(callsign):
+        """Check if callsign has /R rover suffix"""
+        return callsign.upper().endswith("/R")
+    
+    def __init__(self, wsjt_instances, n1mm_host='127.0.0.1', n1mm_port=52001, 
+                 n3fjp_host='127.0.0.1', n3fjp_port=1100, contest_logger='n1mm',
+                 qso_callback=None, location_stamper=None):
         """
         Initialize radio updater
         
@@ -40,12 +102,20 @@ class RadioUpdater:
             wsjt_instances: List of WSJT-X instance configs
             n1mm_host: N1MM+ TCP host
             n1mm_port: N1MM+ JTDX TCP port (default 52001)
+            n3fjp_host: N3FJP API host
+            n3fjp_port: N3FJP API TCP port (default 1100)
+            contest_logger: 'n1mm' or 'n3fjp'
             qso_callback: Function to call when QSO is logged (qso_data dict)
+            location_stamper: Function to stamp GPS location onto QSO for ADIF (qso_data) -> qso_data
         """
         self.wsjt_instances = wsjt_instances
         self.n1mm_host = n1mm_host
         self.n1mm_port = n1mm_port
+        self.n3fjp_host = n3fjp_host
+        self.n3fjp_port = n3fjp_port
+        self.contest_logger = contest_logger
         self.qso_callback = qso_callback
+        self.location_stamper = location_stamper  # For GPS-stamping ADIF records
         
         # Track WSJT-X instance IDs (learned from HeartBeat packets)
         self.wsjtx_ids = {}  # {port: (wsjtx_id, last_seen)}
@@ -53,7 +123,7 @@ class RadioUpdater:
         # Track logged QSOs to avoid duplicates
         self.logged_qsos = set()  # Set of (datetime, callsign, band) tuples
         
-        # QSO relay queue - thread-safe buffer for N1MM+ relay
+        # QSO relay queue - thread-safe buffer for logger relay
         import queue
         self.qso_queue = queue.Queue()
         self.relay_thread = None
@@ -63,21 +133,32 @@ class RadioUpdater:
         self.running = False
         self.listen_threads = []
         
+        # Current grid (for resending after jt9.exe restart)
+        self.current_grid = None
+        
+        # jt9.exe process monitoring
+        self.jt9_pids = set()  # Track known jt9.exe PIDs
+        self.jt9_monitor_thread = None
+        
         # Start listening for WSJT-X packets on ALL configured ports
         self.start_listener()
         
         # Start the N1MM+ relay thread
         self._start_relay_thread()
+        
+        # Start jt9.exe process monitor
+        self._start_jt9_monitor()
     
     def _start_relay_thread(self):
-        """Start the N1MM+ QSO relay thread"""
+        """Start the QSO relay thread"""
         self.relay_thread = threading.Thread(target=self._relay_loop, daemon=True)
         self.relay_thread.start()
-        print("Radio Update: Started N1MM+ QSO relay thread")
+        logger_name = "N3FJP" if self.contest_logger == 'n3fjp' else "N1MM+"
+        print(f"Radio Update: Started {logger_name} QSO relay thread")
     
     def _relay_loop(self):
         """
-        Relay thread - sends QSOs to N1MM+ one at a time with delays.
+        Relay thread - sends QSOs to contest logger one at a time with delays.
         This prevents race conditions when multiple WSJT-X instances
         log QSOs at nearly the same moment.
         """
@@ -97,15 +178,17 @@ class RadioUpdater:
                 if qso_offset > 59:  # Reset after 60 seconds
                     qso_offset = 0
                 
-                # Send to N1MM+
-                success = self._send_qso_to_n1mm(qso_data)
+                # Send to appropriate logger based on configuration
+                if self.contest_logger == 'n3fjp':
+                    success = self._send_qso_to_n3fjp(qso_data)
+                else:
+                    success = self._send_qso_to_n1mm(qso_data)
                 
                 # Mark as done
                 self.qso_queue.task_done()
                 
                 # CRITICAL: Wait before sending next QSO
-                # UDP is stateless so we can use a shorter delay
-                # 500ms should be enough for N1MM+ to process each QSO
+                # This gives the logger time to process each QSO
                 remaining = self.qso_queue.qsize()
                 if remaining > 0:
                     print(f"Radio Update: Waiting 500ms before next QSO ({remaining} remaining in queue)")
@@ -123,14 +206,16 @@ class RadioUpdater:
         # Get unique ports from configured instances
         ports = set()
         for instance in self.wsjt_instances:
-            ports.add(instance.get('udp_port', 2237))
+            port = instance.get('udp_port', 2237)
+            ports.add(port)
+            print(f"Radio Update: Config has '{instance.get('name', 'Unknown')}' on UDP port {port}")
         
         # Start a listener thread for each port
         for port in ports:
             thread = threading.Thread(target=self._listen_loop, args=(port,), daemon=True)
             thread.start()
             self.listen_threads.append(thread)
-            print(f"Radio Update: Started WSJT-X listener on port {port}")
+            print(f"Radio Update: Started listener thread for port {port}")
     
     def stop_listener(self):
         """Stop the listener threads"""
@@ -141,6 +226,83 @@ class RadioUpdater:
         for sock in self.listen_socks:
             if sock:
                 sock.close()
+    
+    def _start_jt9_monitor(self):
+        """Start monitoring jt9.exe processes for restarts"""
+        self.jt9_monitor_thread = threading.Thread(target=self._jt9_monitor_loop, daemon=True)
+        self.jt9_monitor_thread.start()
+        print("Radio Update: Started jt9.exe process monitor")
+    
+    def _get_jt9_pids(self):
+        """Get set of current jt9.exe process IDs"""
+        pids = set()
+        try:
+            import subprocess
+            # Use tasklist on Windows to find jt9.exe processes
+            result = subprocess.run(
+                ['tasklist', '/FI', 'IMAGENAME eq jt9.exe', '/FO', 'CSV', '/NH'],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split('\n'):
+                if line and 'jt9.exe' in line.lower():
+                    # CSV format: "jt9.exe","1234","Console","1","12,345 K"
+                    parts = line.split(',')
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[1].strip().strip('"'))
+                            pids.add(pid)
+                        except ValueError:
+                            pass
+        except Exception as e:
+            # Silently fail - might not be on Windows or tasklist unavailable
+            pass
+        return pids
+    
+    def _jt9_monitor_loop(self):
+        """Monitor jt9.exe processes and resend grid if they restart"""
+        import time
+        
+        # Initial scan
+        self.jt9_pids = self._get_jt9_pids()
+        if self.jt9_pids:
+            print(f"Radio Update: Found {len(self.jt9_pids)} jt9.exe process(es): {self.jt9_pids}")
+        
+        while self.running:
+            try:
+                time.sleep(3)  # Check every 3 seconds
+                
+                current_pids = self._get_jt9_pids()
+                
+                # Check for new PIDs (process restarted)
+                new_pids = current_pids - self.jt9_pids
+                gone_pids = self.jt9_pids - current_pids
+                
+                if new_pids and self.current_grid:
+                    print(f"Radio Update: jt9.exe restarted! New PID(s): {new_pids}, Gone: {gone_pids}")
+                    print(f"Radio Update: Resending grid {self.current_grid} to all WSJT-X instances...")
+                    
+                    # Wait a moment for WSJT-X to stabilize after mode change
+                    time.sleep(2)
+                    
+                    # Resend grid to all instances
+                    self._resend_grid_to_all()
+                
+                self.jt9_pids = current_pids
+                
+            except Exception as e:
+                print(f"Radio Update: jt9 monitor error: {e}")
+                time.sleep(5)
+    
+    def _resend_grid_to_all(self):
+        """Resend current grid to all discovered WSJT-X instances"""
+        if not self.current_grid:
+            return
+        
+        for source_port, (wsjtx_id, last_seen) in self.wsjtx_ids.items():
+            try:
+                self._send_wsjt_location(wsjtx_id, source_port, self.current_grid)
+            except Exception as e:
+                print(f"Radio Update: Error resending to '{wsjtx_id}': {e}")
     
     def _listen_loop(self, port):
         """Listen for WSJT-X HeartBeat packets on a specific port"""
@@ -237,33 +399,37 @@ class RadioUpdater:
     
     def update_grid(self, grid_square):
         """
-        Update grid square in all WSJT-X instances and N1MM+
+        Update grid square in all WSJT-X instances and contest logger (N1MM+ or N3FJP)
         
         Args:
-            grid_square: 6-character Maidenhead grid square
+            grid_square: 4 or 6-character Maidenhead grid square
         """
-        print(f"Radio Update: Setting grid to {grid_square}")
+        # Save for resending after jt9.exe restart
+        self.current_grid = grid_square
         
-        # Check if we have any discovered WSJT-X instances
+        print(f"Radio Update: Setting grid to {grid_square}")
+        print(f"Radio Update: Currently discovered instances: {len(self.wsjtx_ids)}")
+        for port, (wsjtx_id, last_seen) in self.wsjtx_ids.items():
+            print(f"  - '{wsjtx_id}' on port {port}")
+        
+        # Update each discovered WSJT-X instance
         if not self.wsjtx_ids:
             print("Radio Update: WARNING - No WSJT-X instances discovered yet!")
             print("              Make sure WSJT-X is running and broadcasting heartbeats")
-            return
+        else:
+            for source_port, (wsjtx_id, last_seen) in self.wsjtx_ids.items():
+                try:
+                    # Send to the port where WSJT-X is listening (source port of heartbeat)
+                    self._send_wsjt_location(wsjtx_id, source_port, grid_square)
+                    
+                except Exception as e:
+                    print(f"Radio Update: Error updating '{wsjtx_id}' on port {source_port}: {e}")
         
-        # Update each discovered WSJT-X instance
-        for source_port, (wsjtx_id, last_seen) in self.wsjtx_ids.items():
-            try:
-                # Send to the port where WSJT-X is listening (source port of heartbeat)
-                self._send_wsjt_location(wsjtx_id, source_port, grid_square)
-                
-            except Exception as e:
-                print(f"Radio Update: Error updating '{wsjtx_id}' on port {source_port}: {e}")
-        
-        # Update N1MM+
+        # Update contest logger (N1MM+ or N3FJP) - always, even if no WSJT-X instances
         try:
-            self._send_n1mm_roverqth(grid_square)
+            self.send_logger_grid(grid_square)
         except Exception as e:
-            print(f"Radio Update: Error updating N1MM+: {e}")
+            print(f"Radio Update: Error updating {self.contest_logger.upper()}: {e}")
     
     def _send_wsjt_location(self, wsjtx_id, port, grid_square):
         """
@@ -338,24 +504,219 @@ class RadioUpdater:
         """
         Send ROVERQTH update to N1MM+ via UDP
         
-        N1MM+ accepts XML-formatted UDP messages
+        N1MM+ v1.0.11082+ accepts RoverQTH updates on port 13064
+        Format: std XML header + <RoverQTH>grid</RoverQTH>
         """
-        # N1MM+ expects XML format for rover QTH updates
+        # N1MM+ experimental RoverQTH support (v1.0.11082+)
+        # Port 13064, XML format with RoverQTH tag
+        N1MM_ROVERQTH_PORT = 13064
+        
+        # Per N1MM+ developer: "std xml header and <RoverQTH>FN31</RoverQTH>"
         xml_message = (
             f'<?xml version="1.0" encoding="utf-8"?>'
-            f'<contactinfo>'
-            f'<app>N5ZY-CoPilot</app>'
-            f'<StationName>{grid_square}</StationName>'
-            f'<timestamp>{datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}</timestamp>'
-            f'</contactinfo>'
+            f'<RoverQTH>{grid_square}</RoverQTH>'
         )
         
-        # Create socket and send
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.sendto(xml_message.encode('utf-8'), (self.n1mm_host, self.n1mm_port))
-        sock.close()
+        try:
+            # Create socket and send to the new RoverQTH port
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.sendto(xml_message.encode('utf-8'), (self.n1mm_host, N1MM_ROVERQTH_PORT))
+            sock.close()
+            
+            print(f"  N1MM+: Sent RoverQTH '{grid_square}' to UDP port {N1MM_ROVERQTH_PORT}")
+        except Exception as e:
+            print(f"  N1MM+: Error sending RoverQTH: {e}")
+    
+    def send_n1mm_roverqth_county(self, county_abbrev):
+        """
+        Send county abbreviation to N1MM+ for State QSO Parties
         
-        print(f"  N1MM+: Sent ROVERQTH {grid_square}")
+        N1MM+ accepts county abbreviations from QSOParty.sec for QSO parties.
+        Format: std XML header + <RoverQTH>COUNTY</RoverQTH>
+        
+        Args:
+            county_abbrev: County abbreviation (e.g., 'CAN' for Canadian County, OK)
+        """
+        N1MM_ROVERQTH_PORT = 13064
+        
+        xml_message = (
+            f'<?xml version="1.0" encoding="utf-8"?>'
+            f'<RoverQTH>{county_abbrev}</RoverQTH>'
+        )
+        
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.sendto(xml_message.encode('utf-8'), (self.n1mm_host, N1MM_ROVERQTH_PORT))
+            sock.close()
+            
+            print(f"  N1MM+: Sent county '{county_abbrev}' to UDP port {N1MM_ROVERQTH_PORT}")
+        except Exception as e:
+            print(f"  N1MM+: Error sending county: {e}")
+    
+    # ==================== N3FJP Methods ====================
+    
+    def set_logger(self, logger):
+        """Change the contest logger ('n1mm' or 'n3fjp')"""
+        self.contest_logger = logger
+        print(f"RadioUpdater: Contest logger set to {logger}")
+    
+    def _send_n3fjp_command(self, command):
+        """
+        Send a command to N3FJP via TCP
+        
+        N3FJP uses a TCP connection on port 1100 (default)
+        Commands are XML-like: <CMD>...</CMD>
+        
+        Args:
+            command: The command string (without outer <CMD> tags)
+        
+        Returns:
+            True on success, False on error
+        """
+        full_command = f"<CMD>{command}</CMD>"
+        
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect((self.n3fjp_host, self.n3fjp_port))
+            sock.sendall(full_command.encode('utf-8'))
+            
+            # Try to read response (may not always get one)
+            try:
+                response = sock.recv(4096).decode('utf-8')
+                if response:
+                    print(f"  N3FJP: Response: {response[:100]}")  # First 100 chars
+            except socket.timeout:
+                pass  # No response is OK for some commands
+            
+            sock.close()
+            return True  # Success - we sent the command
+            
+        except ConnectionRefusedError:
+            print(f"  N3FJP: Connection refused on port {self.n3fjp_port} - is N3FJP running with API enabled?")
+            return False
+        except Exception as e:
+            print(f"  N3FJP: Error sending command: {e}")
+            return False
+    
+    def _send_n3fjp_grid(self, grid_square):
+        """
+        Send grid square to N3FJP using SETOPINFO command
+        
+        SETOPINFO requires lat/long to match the grid for it to update.
+        We calculate the center point of the grid square.
+        """
+        # Calculate center lat/long from grid square
+        lat, lon = self._grid_to_latlon(grid_square)
+        
+        if lat is None or lon is None:
+            print(f"  N3FJP: Invalid grid square '{grid_square}'")
+            return
+        
+        # SETOPINFO with grid AND matching lat/long
+        command = f"<SETOPINFO><GRID>{grid_square}</GRID><LAT>{lat:.1f}</LAT><LONG>{lon:.1f}</LONG></SETOPINFO>"
+        success = self._send_n3fjp_command(command)
+        
+        if success:
+            print(f"  N3FJP: Sent grid '{grid_square}' (lat={lat:.1f}, lon={lon:.1f}) via SETOPINFO")
+    
+    def _grid_to_latlon(self, grid):
+        """
+        Convert Maidenhead grid square to lat/lon (center of square)
+        
+        Args:
+            grid: 4 or 6 character grid square (e.g., EM15 or EM15fp)
+            
+        Returns:
+            (lat, lon) tuple or (None, None) if invalid
+        """
+        grid = grid.upper().strip()
+        
+        if len(grid) < 4:
+            return None, None
+        
+        try:
+            # First two characters: field (A-R)
+            lon = (ord(grid[0]) - ord('A')) * 20 - 180
+            lat = (ord(grid[1]) - ord('A')) * 10 - 90
+            
+            # Next two characters: square (0-9)
+            lon += int(grid[2]) * 2
+            lat += int(grid[3]) * 1
+            
+            # If 6-char grid, add subsquare
+            if len(grid) >= 6:
+                lon += (ord(grid[4]) - ord('A')) * (2/24)
+                lat += (ord(grid[5]) - ord('A')) * (1/24)
+                # Center of subsquare
+                lon += (2/24) / 2
+                lat += (1/24) / 2
+            else:
+                # Center of 4-char square
+                lon += 1  # Half of 2 degrees
+                lat += 0.5  # Half of 1 degree
+            
+            return lat, lon
+        except (IndexError, ValueError):
+            return None, None
+    
+    def send_n3fjp_qso(self, callsign, band, mode, freq, rst_sent, rst_rcvd, grid, 
+                       date_str=None, time_on=None, time_off=None):
+        """
+        Log a QSO to N3FJP using the UPDATEANDLOG command
+        
+        This is designed for WSJT-X style logging
+        
+        Args:
+            callsign: Remote station callsign
+            band: Band (e.g., '2' for 2m, '70cm', etc.)
+            mode: Mode (FT8, SSB, CW, etc.)
+            freq: Frequency in MHz (e.g., 144.174)
+            rst_sent: RST/signal report sent
+            rst_rcvd: RST/signal report received
+            grid: Remote station grid square
+            date_str: Date in YYYY/MM/DD format (default: today UTC)
+            time_on: Time on in HH:MM format (default: now UTC)
+            time_off: Time off in HH:MM format (default: now UTC)
+        """
+        now = datetime.datetime.utcnow()
+        if date_str is None:
+            date_str = now.strftime("%Y/%m/%d")
+        if time_on is None:
+            time_on = now.strftime("%H:%M")
+        if time_off is None:
+            time_off = now.strftime("%H:%M")
+        
+        # Build the command
+        command = (
+            f"<UPDATEANDLOG>"
+            f"<CALL>{callsign}</CALL>"
+            f"<BAND>{band}</BAND>"
+            f"<MODE>{mode}</MODE>"
+            f"<FREQ>{freq}</FREQ>"
+            f"<RSTS>{rst_sent}</RSTS>"
+            f"<RSTR>{rst_rcvd}</RSTR>"
+            f"<GRID>{grid}</GRID>"
+            f"<DATE>{date_str}</DATE>"
+            f"<TIMEON>{time_on}</TIMEON>"
+            f"<TIMEOFF>{time_off}</TIMEOFF>"
+            f"</UPDATEANDLOG>"
+        )
+        
+        result = self._send_n3fjp_command(command)
+        if result is not None:
+            print(f"  N3FJP: Logged QSO with {callsign} on {band} {mode}")
+        return result
+    
+    def send_logger_grid(self, grid_square):
+        """
+        Send grid to the configured contest logger (N1MM+ or N3FJP)
+        """
+        if self.contest_logger == 'n3fjp':
+            self._send_n3fjp_grid(grid_square)
+        else:
+            # N1MM+ uses RoverQTH
+            self._send_n1mm_roverqth(grid_square)
     
     def send_n1mm_contact(self, band, freq, callsign, grid, mode='SSB'):
         """
@@ -649,6 +1010,13 @@ class RadioUpdater:
         print(f"  Time: {qso_data['datetime_off']}")
         print(f"{'='*60}\n")
         
+        # Stamp GPS location data for LoTW (if stamper provided)
+        if self.location_stamper:
+            try:
+                qso_data = self.location_stamper(qso_data)
+            except Exception as e:
+                print(f"Radio Update: Error stamping location: {e}")
+        
         # Write to ADIF file (immediate - this is the backup)
         self._write_qso_to_adif(qso_data)
         
@@ -682,12 +1050,15 @@ class RadioUpdater:
             
             with open(adif_path, 'a') as f:
                 if write_header:
-                    # Write ADIF header
-                    f.write(f"ADIF Export from N5ZY VHF Co-Pilot\n")
-                    f.write(f"Generated: {datetime.datetime.now().isoformat()}\n")
+                    # Write ADIF 3.1.4 header
+                    f.write(f"#++++++++++++++++++++++++++++++++++++\n")
+                    f.write(f"#   N5ZY Co-Pilot GPS-stamped log\n")
+                    f.write(f"#   Created: {datetime.datetime.now().strftime('%A, %B %d, %Y')}\n")
+                    f.write(f"#   For LoTW upload via Log4OM\n")
+                    f.write(f"#++++++++++++++++++++++++++++++++++++\n\n")
                     f.write(f"<adif_ver:5>3.1.4\n")
-                    f.write(f"<programid:14>N5ZY-CoPilot\n")
-                    f.write(f"<programversion:3>1.0\n")
+                    f.write(f"<programid:12>N5ZY-CoPilot\n")
+                    f.write(f"<programversion:6>1.8.32\n")
                     f.write(f"<eoh>\n\n")
                 
                 # Build ADIF record
@@ -709,70 +1080,163 @@ class RadioUpdater:
         print(f"Radio Update: Manual QSO queued for N1MM+ relay (queue size: {queue_size})")
     
     def _build_adif_record(self, qso_data):
-        """Build ADIF record string from QSO data"""
+        """
+        Build ADIF record string from QSO data.
+        
+        Matches the C# AdifWriter format for Log4OM import and LoTW upload.
+        
+        Includes:
+        - GPS-derived MY_* fields (MY_STATE, MY_CNTY, MY_LAT, MY_LON, etc.)
+        - /R Rover DXCC fix (prevents Log4OM misidentifying rovers as European Russia)
+        - Contest ID mapping
+        - Full station callsign fields
+        """
         fields = []
         
-        # Call
+        # === QSO Core ===
         call = qso_data['dx_call']
         fields.append(f"<call:{len(call)}>{call}")
         
-        # Grid
-        grid = qso_data['dx_grid']
-        if grid:
-            fields.append(f"<gridsquare:{len(grid)}>{grid}")
-        
-        # Frequency (MHz)
-        freq = f"{qso_data['freq_mhz']:.6f}"
-        fields.append(f"<freq:{len(freq)}>{freq}")
-        
-        # Band
-        band = qso_data['band']
-        fields.append(f"<band:{len(band)}>{band}")
-        
-        # Mode
-        mode = qso_data['mode']
-        fields.append(f"<mode:{len(mode)}>{mode}")
-        
-        # RST sent/rcvd
-        rst_sent = qso_data['report_sent']
-        rst_rcvd = qso_data['report_rcvd']
-        if rst_sent:
-            fields.append(f"<rst_sent:{len(rst_sent)}>{rst_sent}")
-        if rst_rcvd:
-            fields.append(f"<rst_rcvd:{len(rst_rcvd)}>{rst_rcvd}")
-        
         # Date/Time
-        if qso_data['datetime_on']:
+        if qso_data.get('datetime_on'):
             qso_date = qso_data['datetime_on'].strftime('%Y%m%d')
             qso_time = qso_data['datetime_on'].strftime('%H%M%S')
             fields.append(f"<qso_date:8>{qso_date}")
             fields.append(f"<time_on:6>{qso_time}")
         
-        if qso_data['datetime_off']:
+        if qso_data.get('datetime_off'):
+            qso_date_off = qso_data['datetime_off'].strftime('%Y%m%d')
             qso_time_off = qso_data['datetime_off'].strftime('%H%M%S')
+            fields.append(f"<qso_date_off:8>{qso_date_off}")
             fields.append(f"<time_off:6>{qso_time_off}")
         
-        # My call and grid
-        my_call = qso_data['my_call']
-        if my_call:
-            fields.append(f"<station_callsign:{len(my_call)}>{my_call}")
+        # Band and frequency
+        band = qso_data.get('band', '')
+        if band:
+            fields.append(f"<band:{len(band)}>{band}")
         
-        my_grid = qso_data['my_grid']
-        if my_grid:
-            fields.append(f"<my_gridsquare:{len(my_grid)}>{my_grid}")
+        mode = qso_data.get('mode', '')
+        if mode:
+            fields.append(f"<mode:{len(mode)}>{mode}")
+        
+        freq = f"{qso_data.get('freq_mhz', 0):.6f}"
+        fields.append(f"<freq:{len(freq)}>{freq}")
+        fields.append(f"<freq_rx:{len(freq)}>{freq}")  # Same as TX for simplex
+        
+        # RST
+        rst_sent = qso_data.get('report_sent', '')
+        rst_rcvd = qso_data.get('report_rcvd', '')
+        if rst_sent:
+            fields.append(f"<rst_sent:{len(rst_sent)}>{rst_sent}")
+        if rst_rcvd:
+            fields.append(f"<rst_rcvd:{len(rst_rcvd)}>{rst_rcvd}")
         
         # Power
         power = qso_data.get('tx_power', '')
         if power:
             fields.append(f"<tx_pwr:{len(power)}>{power}")
         
-        # Contest exchange (may not exist for manual QSOs)
-        exch_sent = qso_data.get('exchange_sent', '')
-        exch_rcvd = qso_data.get('exchange_rcvd', '')
+        # === Contest Fields ===
+        contest_id = qso_data.get('contest_id', '')
+        if contest_id:
+            mapped_id = self.map_contest_id(contest_id)
+            fields.append(f"<contest_id:{len(mapped_id)}>{mapped_id}")
+        
+        # Serial numbers
+        stx = qso_data.get('stx', '')
+        srx = qso_data.get('srx', '')
+        if stx:
+            fields.append(f"<stx:{len(stx)}>{stx}")
+        if srx:
+            fields.append(f"<srx:{len(srx)}>{srx}")
+        
+        # Exchange strings
+        exch_sent = qso_data.get('exchange_sent', '') or qso_data.get('stx_string', '')
+        exch_rcvd = qso_data.get('exchange_rcvd', '') or qso_data.get('srx_string', '')
         if exch_sent:
             fields.append(f"<stx_string:{len(exch_sent)}>{exch_sent}")
         if exch_rcvd:
             fields.append(f"<srx_string:{len(exch_rcvd)}>{exch_rcvd}")
+        
+        # === Their Info ===
+        grid = qso_data.get('dx_grid', '')
+        if grid:
+            fields.append(f"<gridsquare:{len(grid)}>{grid}")
+        
+        # /R Rover DXCC Fix: If contacted station is a rover (/R), add explicit
+        # DXCC fields to prevent Log4OM from misinterpreting /R as European Russia
+        if self.is_rover_call(call):
+            # For US rovers, set explicit US DXCC info
+            fields.append("<dxcc:3>291")              # United States
+            fields.append("<cqz:1>4")                 # CQ Zone 4 (central US default)
+            fields.append("<ituz:1>7")                # ITU Zone 7 (central US default)
+            fields.append("<country:13>United States")
+            # Derive prefix from callsign (e.g., N5 from N5ZY/R)
+            prefix = self._derive_prefix(call)
+            if prefix:
+                fields.append(f"<pfx:{len(prefix)}>{prefix}")
+        
+        # === My Info (GPS-derived for LoTW) ===
+        my_call = qso_data.get('my_call', '')
+        if my_call:
+            fields.append(f"<station_callsign:{len(my_call)}>{my_call}")
+            fields.append(f"<operator:{len(my_call)}>{my_call}")
+            # Owner callsign (without /R suffix)
+            owner = my_call.split('/')[0]
+            fields.append(f"<owner_callsign:{len(owner)}>{owner}")
+        
+        # My grid (6-char from GPS)
+        my_grid = qso_data.get('my_grid', '')
+        if my_grid:
+            fields.append(f"<my_gridsquare:{len(my_grid)}>{my_grid}")
+        
+        # My state (from county lookup)
+        my_state = qso_data.get('my_state', '')
+        if my_state:
+            fields.append(f"<my_state:{len(my_state)}>{my_state}")
+        
+        # My county (from county lookup - just county name for Log4OM)
+        my_county = qso_data.get('my_county', '')
+        if my_county:
+            fields.append(f"<my_cnty:{len(my_county)}>{my_county}")
+        
+        # My lat/lon (ADIF format)
+        my_lat = qso_data.get('my_lat', '')
+        my_lon = qso_data.get('my_lon', '')
+        if my_lat:
+            fields.append(f"<my_lat:{len(my_lat)}>{my_lat}")
+        if my_lon:
+            fields.append(f"<my_lon:{len(my_lon)}>{my_lon}")
+        
+        # My country/zone info (US defaults)
+        my_country = qso_data.get('my_country', 'United States')
+        fields.append(f"<my_country:{len(my_country)}>{my_country}")
+        
+        my_cq_zone = qso_data.get('my_cq_zone', '4')
+        fields.append(f"<my_cq_zone:{len(my_cq_zone)}>{my_cq_zone}")
+        
+        my_itu_zone = qso_data.get('my_itu_zone', '7')
+        fields.append(f"<my_itu_zone:{len(my_itu_zone)}>{my_itu_zone}")
+        
+        my_dxcc = qso_data.get('my_dxcc', '291')
+        fields.append(f"<my_dxcc:{len(my_dxcc)}>{my_dxcc}")
+        
+        # Rover QTH (4-char grid for VHF contests)
+        rover_qth = qso_data.get('rover_qth', '')
+        if not rover_qth and my_grid:
+            rover_qth = my_grid[:4]  # Use first 4 chars of 6-char grid
+        if rover_qth:
+            fields.append(f"<app_n5zy_roverqth:{len(rover_qth)}>{rover_qth}")
+        
+        # === QSL Status (defaults for new QSOs) ===
+        fields.append("<qsl_sent:1>N")
+        fields.append("<qsl_rcvd:1>N")
+        fields.append("<lotw_qsl_sent:1>N")
+        fields.append("<lotw_qsl_rcvd:1>N")
+        fields.append("<qso_complete:1>Y")
+        
+        # === Program ID ===
+        fields.append("<programid:12>N5ZY-CoPilot")
         
         # Comment (include source - WSJT-X instance name or Manual)
         wsjtx_id = qso_data.get('wsjtx_id', 'Manual Entry')
@@ -786,6 +1250,30 @@ class RadioUpdater:
         fields.append("<eor>")
         
         return ' '.join(fields)
+    
+    @staticmethod
+    def _derive_prefix(callsign):
+        """
+        Derive the callsign prefix (e.g., N5 from N5ZY, KF0 from KF0QQQ)
+        Used for the PFX field in ADIF.
+        """
+        if not callsign:
+            return ""
+        
+        # Remove /R, /P, /M suffixes
+        base_call = callsign.split('/')[0].upper()
+        
+        # Find where the prefix ends (letters then number)
+        prefix = ""
+        found_digit = False
+        
+        for ch in base_call:
+            prefix += ch
+            if ch.isdigit():
+                found_digit = True
+                break
+        
+        return prefix if found_digit else base_call
     
     def _send_qso_to_n1mm(self, qso_data):
         """
@@ -826,6 +1314,73 @@ class RadioUpdater:
             
         except Exception as e:
             print(f"Radio Update: ❌ Error sending to N1MM+: {e}")
+            return False
+    
+    def _send_qso_to_n3fjp(self, qso_data):
+        """
+        Send a single QSO to N3FJP via TCP using UPDATEANDLOG command
+        
+        This is the WSJT-X style logging command that N3FJP supports.
+        """
+        try:
+            # Extract QSO data
+            call = qso_data['dx_call']
+            grid = qso_data.get('dx_grid', '') or ''
+            mode = qso_data['mode']
+            freq_mhz = qso_data['freq_mhz']
+            rst_sent = qso_data.get('report_sent', '-10') or '-10'
+            rst_rcvd = qso_data.get('report_rcvd', '-10') or '-10'
+            
+            # Convert band to N3FJP format (just the number, e.g., "2" for 2m)
+            band = qso_data['band']
+            # Remove 'MHz' or 'M' suffix if present
+            band_num = band.replace('MHz', '').replace('M', '').replace('m', '').strip()
+            
+            # Format date and time
+            if qso_data.get('datetime_on'):
+                date_str = qso_data['datetime_on'].strftime('%Y/%m/%d')
+                time_on = qso_data['datetime_on'].strftime('%H:%M')
+            else:
+                import datetime
+                now = datetime.datetime.utcnow()
+                date_str = now.strftime('%Y/%m/%d')
+                time_on = now.strftime('%H:%M')
+            
+            if qso_data.get('datetime_off'):
+                time_off = qso_data['datetime_off'].strftime('%H:%M')
+            else:
+                time_off = time_on
+            
+            # Build UPDATEANDLOG command
+            command = (
+                f"<UPDATEANDLOG>"
+                f"<CALL>{call}</CALL>"
+                f"<BAND>{band_num}</BAND>"
+                f"<MODE>{mode}</MODE>"
+                f"<FREQ>{freq_mhz:.6f}</FREQ>"
+                f"<RSTS>{rst_sent}</RSTS>"
+                f"<RSTR>{rst_rcvd}</RSTR>"
+                f"<GRID>{grid}</GRID>"
+                f"<DATE>{date_str}</DATE>"
+                f"<TIMEON>{time_on}</TIMEON>"
+                f"<TIMEOFF>{time_off}</TIMEOFF>"
+                f"</UPDATEANDLOG>"
+            )
+            
+            print(f"Radio Update: Sending to N3FJP TCP:{self.n3fjp_port}:")
+            print(f"              <CMD>{command}</CMD>")
+            
+            success = self._send_n3fjp_command(command)
+            
+            if success:
+                print(f"Radio Update: ✅ Sent QSO to N3FJP ({call} on {band})")
+                return True
+            else:
+                print(f"Radio Update: ❌ Failed to send QSO to N3FJP")
+                return False
+                
+        except Exception as e:
+            print(f"Radio Update: ❌ Error sending to N3FJP: {e}")
             return False
     
     def _build_adif_for_n1mm(self, qso_data):
