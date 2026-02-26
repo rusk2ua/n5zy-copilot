@@ -285,6 +285,11 @@ class APRSClient:
             # Check if it's for us (with or without SSID)
             my_call_base = self.callsign.split('-')[0]
             if addressee == self.callsign or addressee == my_call_base:
+                # Skip messages from our EXACT callsign (APRS-IS echoes our own packets)
+                # But allow messages from same base call with different SSID (e.g., N5ZY to N5ZY-9)
+                if from_call.upper() == self.callsign.upper():
+                    return
+                
                 # Extract message
                 msg_part = data[11:]  # After ":ADDRESSEE:"
                 
@@ -295,6 +300,16 @@ class APRSClient:
                     msgno = msgno.rstrip('}')
                 
                 message = msg_part.strip()
+                
+                # Skip ack messages - handle them silently
+                if message.startswith('ack'):
+                    print(f"APRS: Received ACK from {from_call}: {message}")
+                    return
+                
+                # Skip rej messages too
+                if message.startswith('rej'):
+                    print(f"APRS: Received REJ from {from_call}: {message}")
+                    return
                 
                 print(f"APRS: Message from {from_call}: {message}")
                 
@@ -324,6 +339,12 @@ class APRSClient:
         try:
             # Skip if we don't have our own position
             if not self.my_lat or not self.my_lon:
+                return
+            
+            # Skip our own callsign (any SSID) - don't alert about ourselves!
+            my_call_base = self.callsign.split('-')[0].upper()
+            from_call_base = from_call.split('-')[0].upper()
+            if from_call_base == my_call_base:
                 return
             
             # Parse position from various formats

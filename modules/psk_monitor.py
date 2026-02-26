@@ -132,6 +132,46 @@ class PSKMonitor:
         # Lock for thread safety
         self.lock = threading.Lock()
     
+    def _get_bands_from_config(self):
+        """Build bands_to_check dict from my_bands config setting"""
+        # Get configured bands
+        my_bands = self.config.get('my_bands', ['6m', '2m', '1.25m', '70cm', '33cm', '23cm'])
+        
+        # Combine all known bands
+        all_bands = {}
+        all_bands.update(self.HF_BANDS)
+        all_bands.update(self.BANDS)
+        
+        # Filter to only configured bands
+        bands_to_check = {}
+        for band in my_bands:
+            if band in all_bands:
+                bands_to_check[band] = all_bands[band]
+        
+        return bands_to_check
+    
+    def _get_frequency_range(self, bands_to_check):
+        """Calculate frequency range for API query based on selected bands"""
+        if not bands_to_check:
+            return '50000000-1300000000'  # Default VHF range
+        
+        # Find min and max frequencies across all selected bands
+        min_freq = float('inf')
+        max_freq = 0
+        
+        for band, (low, high) in bands_to_check.items():
+            # Convert to Hz
+            low_hz = low * 1_000_000
+            high_hz = high * 1_000_000
+            min_freq = min(min_freq, low_hz)
+            max_freq = max(max_freq, high_hz)
+        
+        # Add some margin
+        min_freq = int(min_freq * 0.99)  # 1% below
+        max_freq = int(max_freq * 1.01)  # 1% above
+        
+        return f'{min_freq}-{max_freq}'
+    
     def set_grid(self, grid):
         """Update current grid position"""
         self.my_grid = grid
@@ -187,25 +227,32 @@ class PSKMonitor:
     def _poll_psk_reporter(self):
         """Poll PSK Reporter API for recent spots"""
         try:
-            # Determine radius based on contest mode
-            if self.contest_mode == 'qso_party':
+            # Get bands from config (respects "My Bands" setting)
+            bands_to_check = self._get_bands_from_config()
+            
+            # Check if we have any HF bands configured
+            has_hf = any(b in self.HF_BANDS for b in bands_to_check)
+            has_vhf = any(b in self.BANDS for b in bands_to_check)
+            
+            # Determine radius based on contest mode and bands
+            if self.contest_mode == 'qso_party' or has_hf:
                 radius_miles = self.hf_radius
-                bands_to_check = self.HF_BANDS
             else:
                 radius_miles = self.vhf_radius
-                if self.contest_mode == '222up':
-                    # 222 and up - only care about 1.25m and higher
-                    bands_to_check = {k: v for k, v in self.BANDS.items() 
-                                     if k not in ['6m', '2m']}
-                else:
-                    bands_to_check = self.BANDS
+            
+            # For 222up mode, filter out 6m and 2m
+            if self.contest_mode == '222up':
+                bands_to_check = {k: v for k, v in bands_to_check.items() 
+                                 if k not in ['6m', '2m']}
+            
+            # Calculate frequency range based on selected bands
+            frange = self._get_frequency_range(bands_to_check)
             
             # Build API URL - query by grid field (first 2 chars = field)
             # This gets all activity in our general area
             grid_field = self.my_grid[:2] if self.my_grid else 'EM'
             
             # PSK Reporter API parameters
-            # We want VHF+ spots, so filter by frequency
             # appcontact per PSK Reporter request for frequent API users
             params = {
                 'encap': '0',
@@ -215,14 +262,15 @@ class PSKMonitor:
                 'nolocator': '0',
                 'flowStartSeconds': '-900',  # Last 15 minutes
                 'rronly': '0',
-                'frange': '50000000-1300000000',  # 50 MHz to 1.3 GHz (6m through 23cm)
+                'frange': frange,  # Dynamic based on My Bands
                 'appcontact': 'copilot-pskr@n5zy.org',  # Contact for API issues
             }
             
             url = f"https://retrieve.pskreporter.info/query?{urllib.parse.urlencode(params)}"
             
-            print(f"PSK Monitor: Polling PSK Reporter for VHF+ activity...")
-            print(f"PSK Monitor: My grid: {self.my_grid}, Radius: {radius_miles} mi")
+            bands_str = ', '.join(sorted(bands_to_check.keys()))
+            print(f"PSK Monitor: Polling PSK Reporter for {bands_str} activity...")
+            print(f"PSK Monitor: My grid: {self.my_grid}, Radius: {radius_miles} mi, frange: {frange}")
             print(f"PSK Monitor: URL: {url[:100]}...")
             
             req = urllib.request.Request(url)
@@ -775,6 +823,18 @@ class PSKMonitor:
     def _band_to_voice(self, band):
         """Convert band name to voice-friendly format"""
         voice_map = {
+            # HF bands
+            '160m': '160 meters',
+            '80m': '80 meters',
+            '60m': '60 meters',
+            '40m': '40 meters',
+            '30m': '30 meters',
+            '20m': '20 meters',
+            '17m': '17 meters',
+            '15m': '15 meters',
+            '12m': '12 meters',
+            '10m': '10 meters',
+            # VHF/UHF bands
             '6m': '6 meters',
             '2m': '2 meters',
             '1.25m': '1.25 meters',
@@ -782,5 +842,8 @@ class PSKMonitor:
             '33cm': '33 centimeters',
             '23cm': '23 centimeters',
             '13cm': '13 centimeters',
+            '9cm': '9 centimeters',
+            '5cm': '5 centimeters',
+            '3cm': '3 centimeters',
         }
         return voice_map.get(band, band)

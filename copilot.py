@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 import json
 import os
 from pathlib import Path
+from datetime import datetime
 
 # Import our modules (will create these next)
 from modules.gps_monitor import GPSMonitor
@@ -26,7 +27,7 @@ from modules.qsoparty_parser import (
     get_county_list_for_display,
     get_canonical_county
 )
-from modules.county_lookup import CountyLookupService
+from modules.county_lookup import CountyLookupService, CountyInfo
 
 # Contest mode constants
 CONTEST_MODES = {
@@ -41,7 +42,7 @@ VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', 
 ALL_BANDS = HF_BANDS + VHF_BANDS
 
 class CoPilotApp:
-    VERSION = "1.8.31"
+    VERSION = "1.8.52"
     
     def __init__(self, root):
         self.root = root
@@ -65,13 +66,17 @@ class CoPilotApp:
         self.qsy_advisor.set_qsy_callback(self.on_qsy_opportunity)
         self.grid_boundary = GridBoundaryMonitor(self.on_boundary_announcement)
         
+        # County lookup (uses Census TIGER shapefile)
+        self.county_lookup = None
+        self.current_county_info = None  # CountyInfo object for current location
+        self._last_county_name = ""      # For detecting county changes
+        self._load_county_shapefile()
+        
         # Current state
         self.current_grid = "----"
         self.current_county = ""  # For QSO Party mode (abbreviation sent to N1MM+)
         self.current_lat = None   # GPS latitude for ADIF stamping
         self.current_lon = None   # GPS longitude for ADIF stamping
-        self.current_county_info = None  # Full CountyInfo from shapefile lookup
-        self._last_county_name = ""      # For detecting county changes
         self.battery_voltage = 0.0
         self.battery_current = 0.0
         self.battery_soc = 100.0
@@ -80,9 +85,14 @@ class CoPilotApp:
         self.qso_parties = {}
         self._load_qsoparty_data()
         
-        # County lookup service (for QSO Party mode auto-detection)
-        self.county_lookup = None
-        self._load_county_shapefile()
+        # Super Check Partial (SCP) callsign database
+        self.scp_calls = []
+        self.worked_calls = set()  # Callsigns from QSO Log for SCP matching
+        self._load_scp_database()
+        
+        # QRZ session for fallback lookups
+        self._qrz_session_key = None
+        self._qrz_last_lookup = {}  # Cache: {callsign: (found, timestamp)}
         
         # Ignore list for "calling me" alerts: {callsign: expire_timestamp}
         self.ignored_stations = {}
@@ -117,8 +127,6 @@ class CoPilotApp:
                 'qso_party_code': 'OK',  # QSO party code (e.g., OK, TX, 7QP, MAQP)
                 'qso_party_county': '',  # Current county abbreviation
                 'qsoparty_file': get_default_qsoparty_path(),  # N1MM+ QSOParty.sec file
-                'county_shapefile': 'data/us_counties_10m.shp',  # US county boundaries shapefile
-                'county_auto_detect': True,  # Auto-detect county from GPS in QSO Party mode
                 'wsjt_instances': [
                     {'name': 'IC-7610 (6m/HF)', 'log_path': '', 'udp_port': 2237},
                     {'name': 'IC-9700 (2m/70cm/23cm/10G)', 'log_path': '', 'udp_port': 2238},
@@ -139,6 +147,9 @@ class CoPilotApp:
                 'aprs_comment': 'N5ZY.ORG Rover!',  # Beacon comment
                 # Grid boundary alerts
                 'grid_boundary_alerts': False,  # Voice alerts when approaching grid edges
+                # QRZ lookup (fallback when SCP has no matches)
+                'qrz_username': '',
+                'qrz_password': '',
             }
             self.save_config()
     
@@ -149,21 +160,49 @@ class CoPilotApp:
         if self.qso_parties:
             print(f"Loaded {len(self.qso_parties)} QSO parties")
     
+    def _load_scp_database(self):
+        """Load Super Check Partial database from master.dta file"""
+        # Check common locations for master.dta
+        possible_paths = [
+            'data/master.dta',
+            'data/MASTER.DTA',
+            Path.home() / 'Documents' / 'N1MM Logger+' / 'CallHistory' / 'master.dta',
+            Path.home() / 'Documents' / 'N1MM Logger+' / 'master.dta',
+            self.config.get('scp_file', ''),
+        ]
+        
+        scp_path = None
+        for path in possible_paths:
+            if path and Path(path).exists():
+                scp_path = Path(path)
+                break
+        
+        if not scp_path:
+            print("SCP: master.dta not found - Super Check Partial disabled")
+            print("  Download from http://supercheckpartial.com and place in data/master.dta")
+            return
+        
+        try:
+            with open(scp_path, 'r', encoding='utf-8', errors='ignore') as f:
+                self.scp_calls = [line.strip().upper() for line in f if line.strip() and not line.startswith('#')]
+            print(f"SCP: Loaded {len(self.scp_calls)} callsigns from {scp_path}")
+        except Exception as e:
+            print(f"SCP: Error loading master.dta: {e}")
+            self.scp_calls = []
+    
     def _load_county_shapefile(self):
-        """Load county boundaries shapefile for QSO Party auto-detection"""
+        """Load county boundaries shapefile for GPS-based county detection"""
         shapefile_path = self.config.get('county_shapefile', 'data/us_counties_10m.shp')
         
         print(f"County Lookup: Looking for shapefile at: {shapefile_path}")
         
         if not Path(shapefile_path).exists():
-            print(f"  ERROR: Shapefile not found!")
-            print(f"  Full path: {Path(shapefile_path).absolute()}")
-            print("  Auto county detection will be disabled.")
+            print(f"  Shapefile not found - county auto-detection disabled")
+            print(f"  Download from Census Bureau and place at: {shapefile_path}")
             self.county_lookup = None
             return
         
         try:
-            from modules.county_lookup import CountyLookupService
             self.county_lookup = CountyLookupService()
             self.county_lookup.load_shapefile(shapefile_path)
             print(f"  SUCCESS: Loaded {self.county_lookup.county_count} counties")
@@ -259,22 +298,27 @@ class CoPilotApp:
         status_frame = ttk.Frame(self.root, relief=tk.RAISED, borderwidth=2)
         status_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # Grid display (large)
-        ttk.Label(status_frame, text="Current Grid:", font=('Arial', 12)).pack(side=tk.LEFT, padx=5)
+        # GPS lock indicator (colored circle)
+        self.gps_indicator = tk.Label(status_frame, text="●", font=('Arial', 16, 'bold'),
+                                       fg='red')  # Starts red (no lock)
+        self.gps_indicator.pack(side=tk.LEFT, padx=(5, 2))
+        
+        # Grid display (large) - shortened label
+        ttk.Label(status_frame, text="Grid:", font=('Arial', 12)).pack(side=tk.LEFT, padx=2)
         self.grid_label = ttk.Label(status_frame, text=self.current_grid, 
                                      font=('Arial', 24, 'bold'), foreground='blue')
-        self.grid_label.pack(side=tk.LEFT, padx=10)
+        self.grid_label.pack(side=tk.LEFT, padx=5)
         
-        # County display (for QSO Party mode - initially hidden)
+        # County display (for QSO Party mode - initially hidden) - shortened label
         self.county_frame = ttk.Frame(status_frame)
-        ttk.Label(self.county_frame, text="County:", font=('Arial', 12)).pack(side=tk.LEFT, padx=5)
+        ttk.Label(self.county_frame, text="Cnty:", font=('Arial', 12)).pack(side=tk.LEFT, padx=2)
         self.county_label = ttk.Label(self.county_frame, text="----", 
                                        font=('Arial', 18, 'bold'), foreground='purple')
         self.county_label.pack(side=tk.LEFT, padx=5)
         # Will be shown/hidden by _update_contest_mode_ui()
         
-        # Battery voltage (always visible)
-        ttk.Label(status_frame, text="Battery:", font=('Arial', 12)).pack(side=tk.LEFT, padx=20)
+        # Battery voltage (always visible) - shortened label
+        ttk.Label(status_frame, text="Bat:", font=('Arial', 12)).pack(side=tk.LEFT, padx=15)
         self.voltage_label = ttk.Label(status_frame, text="--.-V", 
                                         font=('Arial', 18, 'bold'), foreground='green')
         self.voltage_label.pack(side=tk.LEFT, padx=5)
@@ -336,6 +380,21 @@ class CoPilotApp:
                                               command=self.toggle_aprs)
         self.aprs_checkbox.pack(side=tk.RIGHT, padx=5)
         
+        # PSK enable checkbox (mirrors the one in Settings/PSK Monitor tab)
+        self.psk_status_checkbox = ttk.Checkbutton(status_frame, text="PSK", 
+                                              variable=self.psk_enabled_var,
+                                              command=self._toggle_psk_monitor)
+        self.psk_status_checkbox.pack(side=tk.RIGHT, padx=5)
+        
+        # Configure notebook tab styling for better visibility while mobile
+        style = ttk.Style()
+        style.configure('TNotebook.Tab', 
+                        padding=[12, 6],      # horizontal, vertical padding for spacing
+                        font=('TkDefaultFont', 10))
+        style.map('TNotebook.Tab',
+                  font=[('selected', ('TkDefaultFont', 10, 'bold'))],  # Bold when selected
+                  padding=[('selected', [12, 8])])  # Slightly taller when selected
+        
         # Notebook for tabs
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -356,29 +415,40 @@ class CoPilotApp:
         self.psk_tab = self.create_psk_monitor_tab(notebook)
         notebook.add(self.psk_tab, text="PSK Monitor")
         
-        # Tab 5: QSY Advisor - browse station database
+        # Tab 5: APRS Messages - send/receive APRS messages
+        self.aprs_tab = self.create_aprs_messages_tab(notebook)
+        notebook.add(self.aprs_tab, text="APRS Msgs")
+        
+        # Tab 6: QSY Advisor - browse station database
         self.qsy_tab = self.create_qsy_advisor_tab(notebook)
         notebook.add(self.qsy_tab, text="QSY Advisor")
         
-        # Tab 6: Grid Corner - rover-to-rover QSO tracker (special use at grid corners)
+        # Tab 7: Grid Corner - rover-to-rover QSO tracker (special use at grid corners)
         self.grid_corner_tab = self.create_grid_corner_tab(notebook)
         notebook.add(self.grid_corner_tab, text="Grid Corner")
         
-        # Tab 7: Settings
+        # Tab 8: GPS Logger - track recording and waypoints
+        self.gps_logger_tab = self.create_gps_logger_tab(notebook)
+        notebook.add(self.gps_logger_tab, text="GPS Logger")
+        
+        # Tab 9: Settings
         self.settings_tab = self.create_settings_tab(notebook)
         notebook.add(self.settings_tab, text="Settings")
         
-        # Tab 8: Test Mode
+        # Tab 10: Test Mode
         self.test_tab = self.create_test_tab(notebook)
         notebook.add(self.test_tab, text="Test Mode")
         
-        # Tab 9: About / Support
+        # Tab 11: About / Support
         self.about_tab = self.create_about_tab(notebook)
         notebook.add(self.about_tab, text="About")
         
         # Initialize bands from config after tabs are created
         self._update_manual_entry_bands()
         self._update_grid_corner_bands()
+        
+        # Initialize manual entry labels based on contest mode
+        self._update_manual_entry_labels()
         
         # Bottom status bar
         control_frame = ttk.Frame(self.root)
@@ -559,24 +629,6 @@ class CoPilotApp:
         ttk.Label(self.qso_party_frame, textvariable=self.county_display_var, 
                  font=('TkDefaultFont', 10, 'bold')).grid(row=3, column=1, sticky=tk.W, pady=2, padx=5)
         
-        # Auto-detect county from GPS checkbox
-        self.county_auto_detect_var = tk.BooleanVar(value=self.config.get('county_auto_detect', True))
-        auto_detect_cb = ttk.Checkbutton(self.qso_party_frame, text="Auto-detect county from GPS",
-                                         variable=self.county_auto_detect_var,
-                                         command=self._on_county_auto_detect_change)
-        auto_detect_cb.grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=(5, 2))
-        
-        # Status of county shapefile
-        shapefile_path = self.config.get('county_shapefile', 'data/us_counties_10m.shp')
-        if self.county_lookup and self.county_lookup.is_loaded:
-            shapefile_status = f"✓ {self.county_lookup.county_count} counties loaded"
-            status_color = "green"
-        else:
-            shapefile_status = f"✗ Shapefile not found: {shapefile_path}"
-            status_color = "red"
-        ttk.Label(self.qso_party_frame, text=shapefile_status, 
-                 foreground=status_color).grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=2)
-        
         # Initialize county list for current QSO party
         self._update_county_list()
         
@@ -596,13 +648,53 @@ class CoPilotApp:
         ttk.Label(station_frame, text="Used for Slack notifications, APRS, etc.", 
                  foreground="gray").grid(row=0, column=2, sticky=tk.W, padx=5)
         
+        # Data Files
+        datafiles_frame = ttk.LabelFrame(frame, text="Data Files", padding=10)
+        datafiles_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # SCP master.dta file
+        ttk.Label(datafiles_frame, text="Super Check Partial:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.scp_file_var = tk.StringVar(value=self.config.get('scp_file', 'data/master.dta'))
+        ttk.Entry(datafiles_frame, textvariable=self.scp_file_var, width=35).grid(row=0, column=1, pady=2, padx=5)
+        ttk.Button(datafiles_frame, text="Download", 
+                   command=self._download_scp_file).grid(row=0, column=2, pady=2, padx=2)
+        ttk.Button(datafiles_frame, text="Browse...", 
+                   command=self._browse_scp_file).grid(row=0, column=3, pady=2, padx=2)
+        ttk.Button(datafiles_frame, text="Reload", 
+                   command=self._reload_scp_file).grid(row=0, column=4, pady=2, padx=2)
+        
+        scp_count = len(self.scp_calls) if hasattr(self, 'scp_calls') else 0
+        self.scp_count_label = ttk.Label(datafiles_frame, text=f"({scp_count} callsigns loaded)", foreground="gray")
+        self.scp_count_label.grid(row=0, column=5, sticky=tk.W, padx=5)
+        
+        # QRZ fallback lookup (when SCP has no matches)
+        ttk.Label(datafiles_frame, text="QRZ Lookup:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        qrz_cred_frame = ttk.Frame(datafiles_frame)
+        qrz_cred_frame.grid(row=1, column=1, columnspan=4, sticky=tk.W, pady=2)
+        
+        ttk.Label(qrz_cred_frame, text="Username:").pack(side=tk.LEFT)
+        self.qrz_username_var = tk.StringVar(value=self.config.get('qrz_username', ''))
+        ttk.Entry(qrz_cred_frame, textvariable=self.qrz_username_var, width=12).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Label(qrz_cred_frame, text="Password:").pack(side=tk.LEFT, padx=(10, 0))
+        self.qrz_password_var = tk.StringVar(value=self.config.get('qrz_password', ''))
+        ttk.Entry(qrz_cred_frame, textvariable=self.qrz_password_var, width=12, show='*').pack(side=tk.LEFT, padx=2)
+        
+        ttk.Label(qrz_cred_frame, text="(fallback when SCP has no match)", foreground="gray").pack(side=tk.LEFT, padx=10)
+        
         # GPS Settings
         gps_frame = ttk.LabelFrame(frame, text="GPS Settings", padding=10)
         gps_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(gps_frame, text="GPS COM Port:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self.gps_port_var = tk.StringVar(value=self.config['gps_port'])
-        ttk.Entry(gps_frame, textvariable=self.gps_port_var, width=15).grid(row=0, column=1, pady=2)
+        self.gps_port_combo = ttk.Combobox(gps_frame, textvariable=self.gps_port_var, width=12)
+        self.gps_port_combo.grid(row=0, column=1, pady=2, padx=5)
+        ttk.Button(gps_frame, text="Connect", command=self._reconnect_gps).grid(row=0, column=2, pady=2, padx=2)
+        ttk.Button(gps_frame, text="Refresh Ports", command=self._refresh_com_ports).grid(row=0, column=3, pady=2, padx=2)
+        
+        # Initial population of COM ports
+        self._refresh_com_ports()
         
         # Grid boundary alerts toggle
         self.grid_boundary_var = tk.BooleanVar(value=self.config.get('grid_boundary_alerts', False))
@@ -610,7 +702,7 @@ class CoPilotApp:
                        variable=self.grid_boundary_var,
                        command=self.toggle_grid_boundary_alerts).grid(row=1, column=0, sticky=tk.W, pady=2)
         ttk.Label(gps_frame, text="Voice alerts at 5mi, 2mi, 1mi, 100yd, 50yd when approaching boundary", 
-                 foreground="gray").grid(row=1, column=1, columnspan=2, sticky=tk.W, padx=5)
+                 foreground="gray").grid(row=1, column=1, columnspan=3, sticky=tk.W, padx=5)
         
         # Victron Settings
         victron_frame = ttk.LabelFrame(frame, text="Victron SmartShunt", padding=10)
@@ -882,8 +974,16 @@ class CoPilotApp:
         """Create manual QSO entry tab for phone/CW contacts"""
         frame = ttk.Frame(parent)
         
-        entry_frame = ttk.LabelFrame(frame, text="Manual QSO Entry (Phone/CW)", padding=10)
-        entry_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Create left/right paned layout
+        paned = ttk.PanedWindow(frame, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Left side: Entry form
+        left_frame = ttk.Frame(paned)
+        paned.add(left_frame, weight=3)
+        
+        entry_frame = ttk.LabelFrame(left_frame, text="Manual QSO Entry (Phone/CW)", padding=10)
+        entry_frame.pack(fill=tk.BOTH, expand=True)
         
         # Row 0: Band selection (includes HF for QSO parties)
         ttk.Label(entry_frame, text="Band:").grid(row=0, column=0, sticky=tk.W, pady=5)
@@ -895,11 +995,13 @@ class CoPilotApp:
         
         # Row 1: Mode selection
         ttk.Label(entry_frame, text="Mode:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.manual_mode_var = tk.StringVar(value='SSB')
+        self.manual_mode_var = tk.StringVar(value='USB')
         mode_frame = ttk.Frame(entry_frame)
         mode_frame.grid(row=1, column=1, sticky=tk.W, pady=5, padx=5)
-        ttk.Radiobutton(mode_frame, text="SSB", variable=self.manual_mode_var, 
-                       value='SSB', command=self._on_mode_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_frame, text="USB", variable=self.manual_mode_var, 
+                       value='USB', command=self._on_mode_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_frame, text="LSB", variable=self.manual_mode_var, 
+                       value='LSB', command=self._on_mode_change).pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(mode_frame, text="FM", variable=self.manual_mode_var, 
                        value='FM', command=self._on_mode_change).pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(mode_frame, text="CW", variable=self.manual_mode_var, 
@@ -911,15 +1013,15 @@ class CoPilotApp:
         freq_frame.grid(row=2, column=1, sticky=tk.W, pady=5, padx=5)
         self.manual_freq_var = tk.StringVar()
         ttk.Entry(freq_frame, textvariable=self.manual_freq_var, width=12).pack(side=tk.LEFT)
-        ttk.Label(freq_frame, text="MHz (e.g. 144.200, 432.100, 1296.100)").pack(side=tk.LEFT, padx=5)
+        ttk.Label(freq_frame, text="MHz").pack(side=tk.LEFT, padx=5)
         
         # Row 3: Callsign
         ttk.Label(entry_frame, text="Callsign:").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.manual_call_var = tk.StringVar()
         call_entry = ttk.Entry(entry_frame, textvariable=self.manual_call_var, width=15)
         call_entry.grid(row=3, column=1, sticky=tk.W, pady=5, padx=5)
-        # Auto-uppercase
-        self.manual_call_var.trace_add('write', lambda *args: self.manual_call_var.set(self.manual_call_var.get().upper()))
+        # Auto-uppercase and trigger SCP lookup
+        self.manual_call_var.trace_add('write', self._on_callsign_change)
         
         # Row 4: Their Grid / Their Exchange (label changes based on mode)
         self.their_grid_label = ttk.Label(entry_frame, text="Their Grid:")
@@ -962,10 +1064,297 @@ class CoPilotApp:
                    command=self._clear_manual_form).pack(side=tk.LEFT, padx=5)
         
         # Help text
-        ttk.Label(entry_frame, text="For SSB/FM contacts made outside WSJT-X. QSO is sent to N1MM+ and saved to ADIF backup.",
+        ttk.Label(entry_frame, text="QSO is sent to N1MM+ and saved to ADIF backup.",
                  foreground="gray").grid(row=8, column=0, columnspan=3, sticky=tk.W, pady=5)
         
+        # Right side: Super Check Partial
+        right_frame = ttk.Frame(paned)
+        paned.add(right_frame, weight=1)
+        
+        scp_frame = ttk.LabelFrame(right_frame, text="Super Check Partial", padding=5)
+        scp_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # SCP count label
+        self.scp_count_var = tk.StringVar(value=f"Loaded: {len(self.scp_calls)} calls")
+        ttk.Label(scp_frame, textvariable=self.scp_count_var, foreground='gray').pack(anchor=tk.W)
+        
+        # SCP matches listbox with scrollbar
+        scp_list_frame = ttk.Frame(scp_frame)
+        scp_list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        scp_scrollbar = ttk.Scrollbar(scp_list_frame)
+        scp_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.scp_listbox = tk.Listbox(scp_list_frame, yscrollcommand=scp_scrollbar.set, 
+                                       font=('Consolas', 10), height=12)
+        self.scp_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scp_scrollbar.config(command=self.scp_listbox.yview)
+        
+        # Click to select a call
+        self.scp_listbox.bind('<Double-1>', self._on_scp_select)
+        self.scp_listbox.bind('<Return>', self._on_scp_select)
+        
+        # Match count
+        self.scp_match_var = tk.StringVar(value="Type callsign to search...")
+        ttk.Label(scp_frame, textvariable=self.scp_match_var, foreground='gray').pack(anchor=tk.W)
+        
+        # QRZ Lookup button (fallback when not in SCP)
+        lookup_frame = ttk.Frame(scp_frame)
+        lookup_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(lookup_frame, text="Lookup on QRZ", 
+                   command=self._lookup_callsign_qrz).pack(side=tk.LEFT, padx=2)
+        ttk.Button(lookup_frame, text="Callook (US)", 
+                   command=self._lookup_callsign_callook).pack(side=tk.LEFT, padx=2)
+        
+        # Set default band and populate frequency
+        self.manual_band_var.set('2m')
+        self._on_band_select()  # Populate frequency for default band/mode
+        
         return frame
+    
+    def _on_callsign_change(self, *args):
+        """Handle callsign entry changes - uppercase and SCP lookup"""
+        # Prevent recursion when we set uppercase
+        if hasattr(self, '_updating_call') and self._updating_call:
+            return
+        
+        # Get current value
+        current = self.manual_call_var.get()
+        upper = current.upper()
+        
+        # Set to uppercase if needed
+        if current != upper:
+            self._updating_call = True
+            self.manual_call_var.set(upper)
+            self._updating_call = False
+        
+        # Always do SCP lookup
+        self._update_scp_matches(upper)
+    
+    def _update_scp_matches(self, partial):
+        """Update SCP listbox with matching callsigns"""
+        self.scp_listbox.delete(0, tk.END)
+        
+        if not partial or len(partial) < 2:
+            self.scp_match_var.set("Type 2+ chars to search...")
+            return
+        
+        # Find matches in worked_calls first (highest priority)
+        worked_prefix = []
+        worked_contains = []
+        for call in self.worked_calls:
+            if call.startswith(partial):
+                worked_prefix.append(call)
+            elif partial in call:
+                worked_contains.append(call)
+        
+        # Find matches in SCP database
+        scp_prefix = []
+        scp_contains = []
+        for call in self.scp_calls:
+            # Skip if already in worked_calls (avoid duplicates)
+            if call in self.worked_calls:
+                continue
+            if call.startswith(partial):
+                scp_prefix.append(call)
+            elif partial in call:
+                scp_contains.append(call)
+        
+        # Build display list: worked calls first (with suffix), then SCP matches
+        worked_matches = worked_prefix[:25] + worked_contains[:25]
+        scp_matches = scp_prefix[:50] + scp_contains[:50]
+        
+        # Insert worked calls with "(Worked)" suffix
+        for call in worked_matches[:50]:
+            self.scp_listbox.insert(tk.END, f"{call} (Worked)")
+        
+        # Insert SCP matches
+        for call in scp_matches[:50]:
+            self.scp_listbox.insert(tk.END, call)
+        
+        # Update count
+        total_worked = len(worked_prefix) + len(worked_contains)
+        total_scp = len(scp_prefix) + len(scp_contains)
+        total = total_worked + total_scp
+        
+        if total > 100:
+            self.scp_match_var.set(f"{total} matches ({total_worked} worked)")
+        elif total > 0:
+            if total_worked > 0:
+                self.scp_match_var.set(f"{total} matches ({total_worked} worked)")
+            else:
+                self.scp_match_var.set(f"{total} matches")
+        else:
+            # No matches - try QRZ lookup if credentials configured
+            if len(partial) >= 3 and self.config.get('qrz_username') and self.config.get('qrz_password'):
+                self.scp_match_var.set("Checking QRZ...")
+                # Run QRZ lookup in background thread
+                import threading
+                threading.Thread(target=self._qrz_lookup_async, args=(partial,), daemon=True).start()
+            else:
+                self.scp_match_var.set("0 matches")
+    
+    def _on_scp_select(self, event=None):
+        """Handle double-click or Enter on SCP listbox"""
+        selection = self.scp_listbox.curselection()
+        if selection:
+            call = self.scp_listbox.get(selection[0])
+            # Remove suffixes if present
+            if call.endswith(" (QRZ)"):
+                call = call[:-6]
+            elif call.endswith(" (Worked)"):
+                call = call[:-9]
+            self.manual_call_var.set(call)
+    
+    def _qrz_lookup_async(self, callsign):
+        """Look up callsign on QRZ.com (runs in background thread)"""
+        import urllib.request
+        import urllib.parse
+        import xml.etree.ElementTree as ET
+        import time
+        
+        # Check cache first (valid for 5 minutes)
+        cache_entry = self._qrz_last_lookup.get(callsign.upper())
+        if cache_entry:
+            found, timestamp = cache_entry
+            if time.time() - timestamp < 300:  # 5 minute cache
+                self.root.after(0, lambda: self._qrz_show_result(callsign, found))
+                return
+        
+        try:
+            # Get session key if we don't have one
+            if not self._qrz_session_key:
+                if not self._qrz_login():
+                    self.root.after(0, lambda: self.scp_match_var.set("QRZ login failed"))
+                    return
+            
+            # Look up the callsign
+            url = f"https://xmldata.qrz.com/xml/current/?s={self._qrz_session_key}&callsign={urllib.parse.quote(callsign)}"
+            
+            with urllib.request.urlopen(url, timeout=5) as response:
+                data = response.read().decode('utf-8')
+            
+            # Parse XML response
+            root = ET.fromstring(data)
+            ns = {'qrz': 'http://xmldata.qrz.com'}
+            
+            # Check for session error (need to re-login)
+            session = root.find('.//qrz:Session', ns)
+            if session is None:
+                session = root.find('.//Session')
+            if session is not None:
+                error = session.find('qrz:Error', ns)
+                if error is None:
+                    error = session.find('Error')
+                if error is not None and error.text and 'session' in error.text.lower():
+                    self._qrz_session_key = None
+                    # Try once more with fresh login
+                    if self._qrz_login():
+                        self._qrz_lookup_async(callsign)
+                    return
+            
+            # Check if callsign found
+            callsign_elem = root.find('.//qrz:Callsign', ns)
+            if callsign_elem is None:
+                callsign_elem = root.find('.//Callsign')
+            found = callsign_elem is not None
+            
+            # Cache the result
+            self._qrz_last_lookup[callsign.upper()] = (found, time.time())
+            
+            # Update UI on main thread
+            self.root.after(0, lambda: self._qrz_show_result(callsign, found))
+            
+        except Exception as e:
+            print(f"QRZ lookup error: {e}")
+            self.root.after(0, lambda: self.scp_match_var.set("QRZ lookup failed"))
+    
+    def _qrz_login(self):
+        """Login to QRZ.com and get session key"""
+        import urllib.request
+        import urllib.parse
+        import xml.etree.ElementTree as ET
+        
+        username = self.config.get('qrz_username', '')
+        password = self.config.get('qrz_password', '')
+        
+        if not username or not password:
+            return False
+        
+        try:
+            url = f"https://xmldata.qrz.com/xml/current/?username={urllib.parse.quote(username)}&password={urllib.parse.quote(password)}"
+            
+            with urllib.request.urlopen(url, timeout=5) as response:
+                data = response.read().decode('utf-8')
+            
+            # Debug: print raw response
+            print(f"QRZ Response: {data[:500]}")
+            
+            # Parse XML response
+            root = ET.fromstring(data)
+            ns = {'qrz': 'http://xmldata.qrz.com'}
+            
+            # Get session element - fix deprecation warning
+            session = root.find('.//qrz:Session', ns)
+            if session is None:
+                session = root.find('.//Session')
+            
+            if session is not None:
+                # Check for error message first
+                error_elem = session.find('qrz:Error', ns)
+                if error_elem is None:
+                    error_elem = session.find('Error')
+                if error_elem is not None:
+                    print(f"QRZ Error: {error_elem.text}")
+                    return False
+                
+                # Get session key - fix deprecation warning
+                key_elem = session.find('qrz:Key', ns)
+                if key_elem is None:
+                    key_elem = session.find('Key')
+                if key_elem is not None:
+                    self._qrz_session_key = key_elem.text
+                    print(f"QRZ: Logged in successfully")
+                    return True
+            
+            print(f"QRZ: Login failed - no session key in response")
+            return False
+            
+        except Exception as e:
+            print(f"QRZ login error: {e}")
+            return False
+    
+    def _qrz_show_result(self, callsign, found):
+        """Show QRZ lookup result in SCP listbox (called on main thread)"""
+        # Only show if the callsign field still matches what we looked up
+        current = self.manual_call_var.get().upper()
+        if current != callsign.upper():
+            return  # User typed something else, ignore this result
+        
+        if found:
+            self.scp_listbox.delete(0, tk.END)
+            self.scp_listbox.insert(tk.END, f"{callsign.upper()} (QRZ)")
+            self.scp_match_var.set("Found on QRZ")
+        else:
+            self.scp_match_var.set("Not found (SCP or QRZ)")
+    
+    def _lookup_callsign_qrz(self):
+        """Manual QRZ lookup button - opens QRZ.com in browser"""
+        import webbrowser
+        callsign = self.manual_call_var.get().strip().upper()
+        if callsign:
+            webbrowser.open(f"https://www.qrz.com/db/{callsign}")
+        else:
+            self.scp_match_var.set("Enter a callsign first")
+    
+    def _lookup_callsign_callook(self):
+        """Manual Callook lookup button - opens Callook.info in browser (US calls only)"""
+        import webbrowser
+        callsign = self.manual_call_var.get().strip().upper()
+        if callsign:
+            webbrowser.open(f"https://callook.info/{callsign}")
+        else:
+            self.scp_match_var.set("Enter a callsign first")
     
     def _on_band_select(self, event=None):
         """Auto-fill typical frequency when band is selected"""
@@ -973,21 +1362,22 @@ class CoPilotApp:
         mode = self.manual_mode_var.get()
         
         # Typical calling frequencies
+        # USB is standard for VHF+ (above 10 MHz), LSB uses same frequencies
         freq_map = {
-            '6m': {'SSB': '50.125', 'FM': '52.525', 'CW': '50.090'},
-            '2m': {'SSB': '144.200', 'FM': '146.520', 'CW': '144.050'},
-            '1.25m': {'SSB': '222.100', 'FM': '223.500', 'CW': '222.050'},
-            '70cm': {'SSB': '432.100', 'FM': '446.000', 'CW': '432.050'},
-            '33cm': {'SSB': '903.100', 'FM': '903.125', 'CW': '902.050'},
-            '23cm': {'SSB': '1296.100', 'FM': '1294.500', 'CW': '1296.050'},
-            '13cm': {'SSB': '2304.100', 'FM': '2304.100', 'CW': '2304.050'},
-            '9cm': {'SSB': '3456.100', 'FM': '3456.100', 'CW': '3456.050'},
-            '6cm': {'SSB': '5760.100', 'FM': '5760.100', 'CW': '5760.050'},
-            '3cm': {'SSB': '10368.100', 'FM': '10368.100', 'CW': '10368.050'},
+            '6m': {'USB': '50.125', 'LSB': '50.125', 'FM': '52.525', 'CW': '50.090'},
+            '2m': {'USB': '144.200', 'LSB': '144.200', 'FM': '146.520', 'CW': '144.050'},
+            '1.25m': {'USB': '222.100', 'LSB': '222.100', 'FM': '223.500', 'CW': '222.050'},
+            '70cm': {'USB': '432.100', 'LSB': '432.100', 'FM': '446.000', 'CW': '432.050'},
+            '33cm': {'USB': '903.100', 'LSB': '903.100', 'FM': '903.125', 'CW': '902.050'},
+            '23cm': {'USB': '1296.100', 'LSB': '1296.100', 'FM': '1294.500', 'CW': '1296.050'},
+            '13cm': {'USB': '2304.100', 'LSB': '2304.100', 'FM': '2304.100', 'CW': '2304.050'},
+            '9cm': {'USB': '3456.100', 'LSB': '3456.100', 'FM': '3456.100', 'CW': '3456.050'},
+            '6cm': {'USB': '5760.100', 'LSB': '5760.100', 'FM': '5760.100', 'CW': '5760.050'},
+            '3cm': {'USB': '10368.100', 'LSB': '10368.100', 'FM': '10368.100', 'CW': '10368.050'},
         }
         
         if band in freq_map:
-            self.manual_freq_var.set(freq_map[band].get(mode, freq_map[band]['SSB']))
+            self.manual_freq_var.set(freq_map[band].get(mode, freq_map[band]['USB']))
     
     def _on_mode_change(self):
         """Update RST defaults and frequency when mode changes"""
@@ -1010,6 +1400,10 @@ class CoPilotApp:
         self.manual_call_var.set('')
         self.manual_grid_var.set('')
         self.manual_mygrid_var.set(self.current_grid)
+        # Clear SCP results
+        if hasattr(self, 'scp_listbox'):
+            self.scp_listbox.delete(0, tk.END)
+            self.scp_match_var.set("Type callsign to search...")
         # Keep band, mode, freq, RST for next QSO
     
     def create_test_tab(self, parent):
@@ -1240,6 +1634,33 @@ class CoPilotApp:
     def on_qso_logged(self, qso_data):
         """Called when a QSO is logged (from WSJT-X or Manual Entry)"""
         try:
+            # Duplicate detection - suppress echo from N1MM+
+            qso_key = (
+                qso_data['datetime_off'].strftime('%Y%m%d%H%M') if qso_data.get('datetime_off') else '',
+                qso_data.get('dx_call', ''),
+                qso_data.get('band', '')
+            )
+            
+            if not hasattr(self, '_recent_qsos'):
+                self._recent_qsos = set()
+            
+            if qso_key in self._recent_qsos:
+                # This is an echo (probably from N1MM+), suppress
+                print(f"on_qso_logged: Suppressing duplicate for {qso_data.get('dx_call')}")
+                return
+            
+            self._recent_qsos.add(qso_key)
+            
+            # Add to worked_calls for SCP matching
+            dx_call = qso_data.get('dx_call', '').upper()
+            if dx_call:
+                self.worked_calls.add(dx_call)
+            
+            # Limit set size (keep last 100 QSOs)
+            if len(self._recent_qsos) > 100:
+                # Remove oldest entries (sets don't maintain order, but this prevents unbounded growth)
+                self._recent_qsos = set(list(self._recent_qsos)[-50:])
+            
             # Update count
             self.qso_count += 1
             self.qso_count_var.set(f"QSOs: {self.qso_count}")
@@ -2136,8 +2557,7 @@ class CoPilotApp:
         # Send to logger via the radio updater's relay queue (same as Manual Entry)
         if self.radio_updater:
             self.radio_updater.queue_qso_for_relay(qso_data)
-            # Stamp GPS location data for LoTW before writing ADIF
-            self._stamp_qso_location(qso_data)
+            self._stamp_qso_location(qso_data)  # Add MY_STATE, MY_CNTY, etc.
             self.radio_updater._write_qso_to_adif(qso_data)
         
         # Update QSO display on main tab
@@ -2217,6 +2637,563 @@ class CoPilotApp:
                 messagebox.showinfo("Export", f"Saved to {filename}")
             except Exception as e:
                 messagebox.showerror("Export Error", str(e))
+
+    def create_gps_logger_tab(self, parent):
+        """Create GPS Logger tab for recording tracks and waypoints"""
+        frame = ttk.Frame(parent)
+        
+        # Initialize GPS logger state
+        self.gps_logger_active = False
+        self.gps_logger_paused = False
+        self.gps_logger_file = None
+        self.gps_logger_filepath = None
+        self.gps_logger_point_count = 0
+        
+        # === Top: File Settings ===
+        file_frame = ttk.LabelFrame(frame, text="Track File", padding=10)
+        file_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(file_frame, text="Save to:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.gps_log_path_var = tk.StringVar(value=self.config.get('gps_log_path', 'logs/'))
+        ttk.Entry(file_frame, textvariable=self.gps_log_path_var, width=40).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Button(file_frame, text="Browse...", command=self._browse_gps_log_path).grid(row=0, column=2, padx=5, pady=2)
+        
+        ttk.Label(file_frame, text="Filename:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        self.gps_log_filename_var = tk.StringVar(value=f"track_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        ttk.Entry(file_frame, textvariable=self.gps_log_filename_var, width=40).grid(row=1, column=1, padx=5, pady=2)
+        
+        # Control buttons
+        btn_frame = ttk.Frame(file_frame)
+        btn_frame.grid(row=2, column=0, columnspan=3, pady=10)
+        
+        self.gps_start_btn = ttk.Button(btn_frame, text="▶ Start Track", command=self._gps_logger_start, width=15)
+        self.gps_start_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.gps_pause_btn = ttk.Button(btn_frame, text="⏸ Pause", command=self._gps_logger_pause, width=15, state='disabled')
+        self.gps_pause_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.gps_stop_btn = ttk.Button(btn_frame, text="⏹ Stop & Save", command=self._gps_logger_stop, width=15, state='disabled')
+        self.gps_stop_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Status
+        self.gps_logger_status_var = tk.StringVar(value="Not recording")
+        ttk.Label(file_frame, textvariable=self.gps_logger_status_var, foreground="gray").grid(row=3, column=0, columnspan=3, pady=5)
+        
+        # === Middle: GPS Data Display ===
+        data_frame = ttk.LabelFrame(frame, text="Current GPS Data", padding=10)
+        data_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Left column
+        left_frame = ttk.Frame(data_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        
+        # Position
+        ttk.Label(left_frame, text="Position:", font=('TkDefaultFont', 9, 'bold')).grid(row=0, column=0, sticky=tk.W)
+        self.gps_log_position_var = tk.StringVar(value="No GPS Lock")
+        ttk.Label(left_frame, textvariable=self.gps_log_position_var, font=('Consolas', 11)).grid(row=0, column=1, sticky=tk.W, padx=10)
+        
+        # Grid
+        ttk.Label(left_frame, text="Grid:", font=('TkDefaultFont', 9, 'bold')).grid(row=1, column=0, sticky=tk.W)
+        self.gps_log_grid_var = tk.StringVar(value="------")
+        ttk.Label(left_frame, textvariable=self.gps_log_grid_var, font=('Consolas', 14, 'bold')).grid(row=1, column=1, sticky=tk.W, padx=10)
+        
+        # County
+        ttk.Label(left_frame, text="County:", font=('TkDefaultFont', 9, 'bold')).grid(row=2, column=0, sticky=tk.W)
+        self.gps_log_county_var = tk.StringVar(value="---")
+        ttk.Label(left_frame, textvariable=self.gps_log_county_var).grid(row=2, column=1, sticky=tk.W, padx=10)
+        
+        # Altitude
+        ttk.Label(left_frame, text="Altitude:", font=('TkDefaultFont', 9, 'bold')).grid(row=3, column=0, sticky=tk.W)
+        self.gps_log_altitude_var = tk.StringVar(value="--- ft")
+        ttk.Label(left_frame, textvariable=self.gps_log_altitude_var).grid(row=3, column=1, sticky=tk.W, padx=10)
+        
+        # Right column
+        right_frame = ttk.Frame(data_frame)
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        
+        # Time
+        ttk.Label(right_frame, text="GPS Time:", font=('TkDefaultFont', 9, 'bold')).grid(row=0, column=0, sticky=tk.W)
+        self.gps_log_time_var = tk.StringVar(value="--:--:--")
+        ttk.Label(right_frame, textvariable=self.gps_log_time_var, font=('Consolas', 11)).grid(row=0, column=1, sticky=tk.W, padx=10)
+        
+        # Satellites
+        ttk.Label(right_frame, text="Satellites:", font=('TkDefaultFont', 9, 'bold')).grid(row=1, column=0, sticky=tk.W)
+        self.gps_log_sats_var = tk.StringVar(value="0")
+        ttk.Label(right_frame, textvariable=self.gps_log_sats_var).grid(row=1, column=1, sticky=tk.W, padx=10)
+        
+        # Accuracy (HDOP)
+        ttk.Label(right_frame, text="Accuracy:", font=('TkDefaultFont', 9, 'bold')).grid(row=2, column=0, sticky=tk.W)
+        self.gps_log_accuracy_var = tk.StringVar(value="---")
+        ttk.Label(right_frame, textvariable=self.gps_log_accuracy_var).grid(row=2, column=1, sticky=tk.W, padx=10)
+        
+        # Direction
+        ttk.Label(right_frame, text="Heading:", font=('TkDefaultFont', 9, 'bold')).grid(row=3, column=0, sticky=tk.W)
+        self.gps_log_heading_var = tk.StringVar(value="---")
+        ttk.Label(right_frame, textvariable=self.gps_log_heading_var).grid(row=3, column=1, sticky=tk.W, padx=10)
+        
+        # Far right column
+        right2_frame = ttk.Frame(data_frame)
+        right2_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        
+        # Speed
+        ttk.Label(right2_frame, text="Speed:", font=('TkDefaultFont', 9, 'bold')).grid(row=0, column=0, sticky=tk.W)
+        self.gps_log_speed_var = tk.StringVar(value="--- mph")
+        ttk.Label(right2_frame, textvariable=self.gps_log_speed_var).grid(row=0, column=1, sticky=tk.W, padx=10)
+        
+        # Avg Speed
+        ttk.Label(right2_frame, text="Avg Speed:", font=('TkDefaultFont', 9, 'bold')).grid(row=1, column=0, sticky=tk.W)
+        self.gps_log_avgspeed_var = tk.StringVar(value="--- mph")
+        ttk.Label(right2_frame, textvariable=self.gps_log_avgspeed_var).grid(row=1, column=1, sticky=tk.W, padx=10)
+        
+        # Distance
+        ttk.Label(right2_frame, text="Distance:", font=('TkDefaultFont', 9, 'bold')).grid(row=2, column=0, sticky=tk.W)
+        self.gps_log_distance_var = tk.StringVar(value="0.0 mi")
+        ttk.Label(right2_frame, textvariable=self.gps_log_distance_var).grid(row=2, column=1, sticky=tk.W, padx=10)
+        
+        # Points logged
+        ttk.Label(right2_frame, text="Points:", font=('TkDefaultFont', 9, 'bold')).grid(row=3, column=0, sticky=tk.W)
+        self.gps_log_points_var = tk.StringVar(value="0")
+        ttk.Label(right2_frame, textvariable=self.gps_log_points_var).grid(row=3, column=1, sticky=tk.W, padx=10)
+        
+        # === Bottom: Annotation ===
+        annot_frame = ttk.LabelFrame(frame, text="Add Annotation / Waypoint", padding=10)
+        annot_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Pre-made annotations
+        ttk.Label(annot_frame, text="Quick Waypoints:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        
+        presets_frame = ttk.Frame(annot_frame)
+        presets_frame.grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=5)
+        
+        preset_annotations = [
+            "Elev. Overpass", "Elev. Exit Ramp", "Elev. Shoulder", "Elev. Viewpoint",
+            "Utility Driveway", "Field Driveway", "Mesa Edge", "Elev. Parking lot",
+            "School", "Elev. Cemetery", "Rest Area", "Elev. Rest Area"
+        ]
+        
+        for i, preset in enumerate(preset_annotations):
+            btn = ttk.Button(presets_frame, text=preset, width=18,
+                           command=lambda p=preset: self._add_gps_annotation(p))
+            btn.grid(row=i//4, column=i%4, padx=2, pady=2)
+        
+        # Custom annotation
+        ttk.Label(annot_frame, text="Custom:").grid(row=3, column=0, sticky=tk.W, pady=5)
+        self.gps_annotation_var = tk.StringVar()
+        ttk.Entry(annot_frame, textvariable=self.gps_annotation_var, width=50).grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=5)
+        ttk.Button(annot_frame, text="Add Waypoint", command=lambda: self._add_gps_annotation(self.gps_annotation_var.get())).grid(row=3, column=3, padx=5)
+        
+        # Recent annotations list
+        ttk.Label(annot_frame, text="Recent Waypoints:").grid(row=4, column=0, sticky=tk.NW, pady=5)
+        self.gps_recent_annotations = tk.Text(annot_frame, height=4, width=80, state='disabled')
+        self.gps_recent_annotations.grid(row=4, column=1, columnspan=3, sticky=tk.W, pady=5)
+        
+        return frame
+    
+    def _browse_gps_log_path(self):
+        """Browse for GPS log directory"""
+        path = filedialog.askdirectory(initialdir=self.gps_log_path_var.get())
+        if path:
+            self.gps_log_path_var.set(path)
+    
+    def _gps_logger_start(self):
+        """Start GPS track logging"""
+        # Create full filepath
+        path = self.gps_log_path_var.get()
+        filename = self.gps_log_filename_var.get()
+        
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+        
+        os.makedirs(path, exist_ok=True)
+        self.gps_logger_filepath = os.path.join(path, filename)
+        
+        try:
+            self.gps_logger_file = open(self.gps_logger_filepath, 'w', newline='')
+            
+            # Write CSV header
+            header = "timestamp,lat,lon,altitude_ft,altitude_m,satellites,hdop,speed_mph,heading,compass,grid,state,county,annotation\n"
+            self.gps_logger_file.write(header)
+            self.gps_logger_file.flush()
+            
+            self.gps_logger_active = True
+            self.gps_logger_paused = False
+            self.gps_logger_point_count = 0
+            
+            # Reset track stats in GPS monitor
+            if hasattr(self, 'gps_monitor') and self.gps_monitor:
+                if hasattr(self.gps_monitor, 'reset_track_stats'):
+                    self.gps_monitor.reset_track_stats()
+            
+            # Update UI
+            self.gps_start_btn.config(state='disabled')
+            self.gps_pause_btn.config(state='normal')
+            self.gps_stop_btn.config(state='normal')
+            self.gps_logger_status_var.set(f"Recording to: {filename}")
+            self.gps_log_filename_var.set(f"track_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")  # Prep next filename
+            
+            print(f"GPS Logger: Started recording to {self.gps_logger_filepath}")
+            
+        except Exception as e:
+            messagebox.showerror("GPS Logger", f"Failed to start logging: {e}")
+    
+    def _gps_logger_pause(self):
+        """Pause/resume GPS track logging"""
+        if self.gps_logger_paused:
+            self.gps_logger_paused = False
+            self.gps_pause_btn.config(text="⏸ Pause")
+            self.gps_logger_status_var.set(f"Recording to: {os.path.basename(self.gps_logger_filepath)}")
+        else:
+            self.gps_logger_paused = True
+            self.gps_pause_btn.config(text="▶ Resume")
+            self.gps_logger_status_var.set("PAUSED")
+    
+    def _gps_logger_stop(self):
+        """Stop GPS track logging and close file"""
+        if self.gps_logger_file:
+            self.gps_logger_file.close()
+            self.gps_logger_file = None
+            
+            print(f"GPS Logger: Stopped. {self.gps_logger_point_count} points saved to {self.gps_logger_filepath}")
+            messagebox.showinfo("GPS Logger", f"Track saved!\n\n{self.gps_logger_point_count} points\n{self.gps_logger_filepath}")
+        
+        self.gps_logger_active = False
+        self.gps_logger_paused = False
+        
+        # Update UI
+        self.gps_start_btn.config(state='normal')
+        self.gps_pause_btn.config(state='disabled', text="⏸ Pause")
+        self.gps_stop_btn.config(state='disabled')
+        self.gps_logger_status_var.set("Not recording")
+    
+    def _add_gps_annotation(self, annotation):
+        """Add an annotation/waypoint to the GPS log"""
+        if not annotation or not annotation.strip():
+            return
+        
+        annotation = annotation.strip()
+        
+        # Write to log file with current position
+        self._write_gps_point(annotation=annotation)
+        
+        # Clear custom entry
+        self.gps_annotation_var.set("")
+        
+        # Add to recent list
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        self.gps_recent_annotations.config(state='normal')
+        self.gps_recent_annotations.insert('1.0', f"{timestamp}: {annotation}\n")
+        self.gps_recent_annotations.config(state='disabled')
+        
+        # Voice confirmation
+        if hasattr(self, 'voice') and self.voice:
+            self.voice.announce(f"Waypoint added: {annotation}")
+    
+    def _write_gps_point(self, annotation=""):
+        """Write a GPS point to the log file"""
+        if not self.gps_logger_active or self.gps_logger_paused:
+            return
+        if not self.gps_logger_file:
+            return
+        
+        # Get current GPS data
+        lat = getattr(self, 'current_lat', None)
+        lon = getattr(self, 'current_lon', None)
+        
+        if lat is None or lon is None:
+            return
+        
+        # Get extended GPS data if available
+        alt_ft = ""
+        alt_m = ""
+        sats = ""
+        hdop = ""
+        speed = ""
+        heading = ""
+        compass = ""
+        grid = self.current_grid or ""
+        
+        if hasattr(self, 'gps_monitor') and self.gps_monitor:
+            if hasattr(self.gps_monitor, 'get_full_data'):
+                data = self.gps_monitor.get_full_data()
+                if data:
+                    alt_ft = f"{data['altitude_ft']:.0f}" if data.get('altitude_ft') else ""
+                    alt_m = f"{data['altitude_m']:.0f}" if data.get('altitude_m') else ""
+                    sats = str(data.get('satellites', ''))
+                    hdop = f"{data['hdop']:.1f}" if data.get('hdop') else ""
+                    speed = f"{data['speed_mph']:.1f}" if data.get('speed_mph') else ""
+                    heading = f"{data['heading']:.0f}" if data.get('heading') else ""
+                    compass = data.get('compass', '')
+                    grid = data.get('grid_6char', grid)
+        
+        # Get county info
+        state = ""
+        county = ""
+        if hasattr(self, 'current_county_info') and self.current_county_info:
+            state = self.current_county_info.state_abbrev
+            county = self.current_county_info.name
+        
+        # Build CSV line
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Escape annotation for CSV
+        if ',' in annotation or '"' in annotation:
+            annotation = f'"{annotation.replace(chr(34), chr(34)+chr(34))}"'
+        
+        line = f"{timestamp},{lat:.6f},{lon:.6f},{alt_ft},{alt_m},{sats},{hdop},{speed},{heading},{compass},{grid},{state},{county},{annotation}\n"
+        
+        try:
+            self.gps_logger_file.write(line)
+            self.gps_logger_file.flush()
+            self.gps_logger_point_count += 1
+            self.gps_log_points_var.set(str(self.gps_logger_point_count))
+        except Exception as e:
+            print(f"GPS Logger: Error writing point: {e}")
+    
+    def _update_gps_logger_display(self, data):
+        """Update GPS Logger tab display with current GPS data"""
+        if not hasattr(self, 'gps_log_position_var'):
+            return  # Tab not created yet
+            
+        if data is None:
+            # Lost fix
+            self.gps_log_position_var.set("No GPS Lock")
+            self.gps_log_grid_var.set("------")
+            self.gps_log_time_var.set("--:--:--")
+            self.gps_log_sats_var.set("0")
+            self.gps_log_altitude_var.set("--- ft")
+            self.gps_log_accuracy_var.set("---")
+            self.gps_log_heading_var.set("---")
+            self.gps_log_speed_var.set("--- mph")
+            self.gps_log_avgspeed_var.set("--- mph")
+            return
+        
+        # Update display
+        self.gps_log_position_var.set(f"{data['lat']:.6f}, {data['lon']:.6f}")
+        self.gps_log_grid_var.set(data.get('grid_6char', '------'))
+        
+        if data.get('gps_time'):
+            self.gps_log_time_var.set(data['gps_time'].strftime("%H:%M:%S UTC"))
+        
+        self.gps_log_sats_var.set(str(data.get('satellites', 0)))
+        
+        if data.get('altitude_ft') is not None:
+            self.gps_log_altitude_var.set(f"{data['altitude_ft']:.0f} ft ({data.get('altitude_m', 0):.0f} m)")
+        
+        if data.get('hdop') is not None:
+            hdop = data['hdop']
+            if hdop < 1:
+                acc_text = f"{hdop:.1f} (Excellent)"
+            elif hdop < 2:
+                acc_text = f"{hdop:.1f} (Good)"
+            elif hdop < 5:
+                acc_text = f"{hdop:.1f} (Moderate)"
+            else:
+                acc_text = f"{hdop:.1f} (Poor)"
+            self.gps_log_accuracy_var.set(acc_text)
+        
+        if data.get('heading') is not None:
+            self.gps_log_heading_var.set(f"{data['heading']:.0f}° {data.get('compass', '')}")
+        else:
+            self.gps_log_heading_var.set(data.get('compass', '---'))
+        
+        if data.get('speed_mph') is not None:
+            self.gps_log_speed_var.set(f"{data['speed_mph']:.1f} mph")
+        
+        if data.get('avg_speed_mph') is not None:
+            self.gps_log_avgspeed_var.set(f"{data['avg_speed_mph']:.1f} mph")
+        
+        if data.get('total_distance_mi') is not None:
+            self.gps_log_distance_var.set(f"{data['total_distance_mi']:.2f} mi")
+        
+        # Update county display
+        if hasattr(self, 'current_county_info') and self.current_county_info:
+            self.gps_log_county_var.set(f"{self.current_county_info.state_abbrev}: {self.current_county_info.name}")
+        
+        # Write point to log if active (every ~5 seconds to avoid huge files)
+        if self.gps_logger_active and not self.gps_logger_paused:
+            # Only log every 5 seconds
+            if not hasattr(self, '_last_gps_log_time'):
+                self._last_gps_log_time = 0
+            
+            import time
+            now = time.time()
+            if now - self._last_gps_log_time >= 5:
+                self._write_gps_point()
+                self._last_gps_log_time = now
+
+    def _start_gps_logger_timer(self):
+        """Start periodic timer to update GPS Logger display"""
+        def update_gps_logger():
+            if hasattr(self, 'gps_monitor') and self.gps_monitor:
+                if hasattr(self.gps_monitor, 'get_full_data'):
+                    full_data = self.gps_monitor.get_full_data()
+                    self._update_gps_logger_display(full_data)
+            # Schedule next update in 2 seconds
+            self.root.after(2000, update_gps_logger)
+        
+        # Start the update loop
+        self.root.after(2000, update_gps_logger)
+
+    def create_aprs_messages_tab(self, parent):
+        """Create APRS Messages tab for sending/receiving APRS messages"""
+        frame = ttk.Frame(parent)
+        
+        # Top frame - Status and connection info
+        status_frame = ttk.LabelFrame(frame, text="APRS-IS Connection", padding=10)
+        status_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.aprs_msg_status_var = tk.StringVar(value="Not connected")
+        ttk.Label(status_frame, textvariable=self.aprs_msg_status_var).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(status_frame, text="(Enable APRS in Settings or status bar to connect)", 
+                 foreground='gray').pack(side=tk.LEFT, padx=10)
+        
+        # Middle frame - Message inbox
+        inbox_frame = ttk.LabelFrame(frame, text="Received Messages", padding=10)
+        inbox_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Message list (treeview)
+        columns = ('time', 'from', 'message')
+        self.aprs_inbox_tree = ttk.Treeview(inbox_frame, columns=columns, show='headings', height=8)
+        
+        self.aprs_inbox_tree.heading('time', text='Time')
+        self.aprs_inbox_tree.heading('from', text='From')
+        self.aprs_inbox_tree.heading('message', text='Message')
+        
+        self.aprs_inbox_tree.column('time', width=80)
+        self.aprs_inbox_tree.column('from', width=100)
+        self.aprs_inbox_tree.column('message', width=400)
+        
+        # Scrollbar
+        inbox_scroll = ttk.Scrollbar(inbox_frame, orient=tk.VERTICAL, command=self.aprs_inbox_tree.yview)
+        self.aprs_inbox_tree.configure(yscrollcommand=inbox_scroll.set)
+        
+        self.aprs_inbox_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        inbox_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Clear button
+        ttk.Button(inbox_frame, text="Clear Messages", 
+                  command=self._clear_aprs_inbox).pack(pady=5)
+        
+        # Bottom frame - Compose message
+        compose_frame = ttk.LabelFrame(frame, text="Send Message", padding=10)
+        compose_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # To callsign
+        ttk.Label(compose_frame, text="To:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.aprs_to_var = tk.StringVar()
+        self.aprs_to_entry = ttk.Entry(compose_frame, textvariable=self.aprs_to_var, width=15)
+        self.aprs_to_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # Bind uppercase conversion
+        self.aprs_to_var.trace('w', self._aprs_to_uppercase)
+        
+        # Message text
+        ttk.Label(compose_frame, text="Message:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.aprs_msg_var = tk.StringVar()
+        self.aprs_msg_entry = ttk.Entry(compose_frame, textvariable=self.aprs_msg_var, width=50)
+        self.aprs_msg_entry.grid(row=1, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        
+        # Bind Enter key to send
+        self.aprs_msg_entry.bind('<Return>', lambda e: self._send_aprs_message())
+        
+        # Send button
+        ttk.Button(compose_frame, text="Send", 
+                  command=self._send_aprs_message).grid(row=1, column=4, padx=10, pady=5)
+        
+        # Quick replies
+        quick_frame = ttk.Frame(compose_frame)
+        quick_frame.grid(row=2, column=0, columnspan=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(quick_frame, text="Quick:", foreground='gray').pack(side=tk.LEFT, padx=5)
+        
+        quick_messages = ["73", "QSL", "QRV?", "QSY?", "TNX"]
+        for msg in quick_messages:
+            ttk.Button(quick_frame, text=msg, width=6,
+                      command=lambda m=msg: self._set_quick_aprs_msg(m)).pack(side=tk.LEFT, padx=2)
+        
+        return frame
+    
+    def _aprs_to_uppercase(self, *args):
+        """Convert APRS To field to uppercase"""
+        current = self.aprs_to_var.get()
+        upper = current.upper()
+        if current != upper:
+            self.aprs_to_var.set(upper)
+    
+    def _clear_aprs_inbox(self):
+        """Clear APRS inbox messages"""
+        self.aprs_inbox_tree.delete(*self.aprs_inbox_tree.get_children())
+    
+    def _set_quick_aprs_msg(self, msg):
+        """Set quick reply message"""
+        self.aprs_msg_var.set(msg)
+        self.aprs_msg_entry.focus()
+    
+    def _send_aprs_message(self):
+        """Send APRS message"""
+        to_call = self.aprs_to_var.get().strip()
+        message = self.aprs_msg_var.get().strip()
+        
+        if not to_call:
+            messagebox.showwarning("APRS Message", "Please enter a callsign")
+            return
+        
+        if not message:
+            messagebox.showwarning("APRS Message", "Please enter a message")
+            return
+        
+        if not self.aprs_client:
+            messagebox.showwarning("APRS Message", "APRS is not connected. Enable APRS first.")
+            return
+        
+        if not self.aprs_client.connected:
+            messagebox.showwarning("APRS Message", "APRS is not connected. Check your connection.")
+            return
+        
+        # Send the message
+        if self.aprs_client.send_message(to_call, message):
+            # Add to inbox as sent message
+            time_str = datetime.now().strftime('%H:%M:%S')
+            self.aprs_inbox_tree.insert('', 0, values=(
+                time_str,
+                f"To: {to_call}",
+                message
+            ))
+            
+            self.add_alert(f"APRS: Sent to {to_call}: {message}")
+            
+            # Clear message field (keep To field for follow-ups)
+            self.aprs_msg_var.set('')
+        else:
+            messagebox.showerror("APRS Message", "Failed to send message")
+    
+    def _on_aprs_message_received(self, from_call, message, msgno):
+        """Handle received APRS message - called from APRS client thread"""
+        # Schedule UI update on main thread
+        self.root.after(0, lambda: self._display_aprs_message(from_call, message, msgno))
+    
+    def _display_aprs_message(self, from_call, message, msgno):
+        """Display received APRS message in inbox (main thread)"""
+        time_str = datetime.now().strftime('%H:%M:%S')
+        
+        # Add to inbox
+        self.aprs_inbox_tree.insert('', 0, values=(
+            time_str,
+            from_call,
+            message
+        ))
+        
+        # Alert
+        self.add_alert(f"📩 APRS from {from_call}: {message}", priority=True)
+        
+        # Voice announcement
+        if self.voice:
+            self.voice.announce(f"APRS message from {from_call}")
+        
+        # Auto-fill reply To field
+        self.aprs_to_var.set(from_call)
 
     def create_qsy_advisor_tab(self, parent):
         """Create QSY Advisor tab for browsing station band database"""
@@ -2881,6 +3858,9 @@ class CoPilotApp:
                                                         my_grid=my_grid,
                                                         suppress_alert=True)
                         
+                        # Add to worked_calls for SCP matching
+                        self.worked_calls.add(callsign.upper())
+                        
                         qso_count += 1
                 
                 files_loaded += 1
@@ -2936,31 +3916,242 @@ class CoPilotApp:
         self.add_alert("QSO display cleared")
     
     def delete_selected_qso(self):
-        """Delete selected QSO(s) from display"""
+        """Delete selected QSO(s) from display and ADIF file"""
+        import datetime
+        
         selected = self.qso_tree.selection()
         if not selected:
             messagebox.showinfo("No Selection", "Please select a QSO to delete")
             return
         
-        # Get info for confirmation
+        # Get info for confirmation - group by ADIF file
         count = len(selected)
+        qsos_by_file = {}  # {adif_date: [qso_list]}
+        
+        for item in selected:
+            values = self.qso_tree.item(item)['values']
+            # values = (time, call, grid, band, mode, my_grid, source)
+            if len(values) >= 7:
+                source = str(values[6])
+                # Source is like "ADIF:20260217" or "WSJT-X - ic9700" or "Manual"
+                if source.startswith('ADIF:'):
+                    adif_date = source.replace('ADIF:', '')
+                else:
+                    # Live QSO - use today's date
+                    adif_date = datetime.datetime.now().strftime('%Y%m%d')
+                
+                if adif_date not in qsos_by_file:
+                    qsos_by_file[adif_date] = []
+                
+                qsos_by_file[adif_date].append({
+                    'time': str(values[0]),
+                    'call': str(values[1]),
+                    'band': str(values[3]),
+                    'mode': str(values[4])
+                })
+        
         if count == 1:
-            values = self.qso_tree.item(selected[0])['values']
-            call = values[1] if len(values) > 1 else "?"
-            msg = f"Delete QSO with {call} from display?\n\n(You'll need to manually remove from logger if needed)"
+            first_qso = list(qsos_by_file.values())[0][0] if qsos_by_file else {}
+            call = first_qso.get('call', '?')
+            msg = f"Delete QSO with {call}?\n\nThis will remove from display and ADIF log."
         else:
-            msg = f"Delete {count} selected QSOs from display?\n\n(You'll need to manually remove from logger if needed)"
+            msg = f"Delete {count} selected QSOs?\n\nThis will remove from display and ADIF log(s)."
         
         result = messagebox.askyesno("Delete QSO", msg)
         if not result:
             return
         
+        # Delete from display
         for item in selected:
             self.qso_tree.delete(item)
             self.qso_count -= 1
         
         self.qso_count_var.set(f"QSOs: {self.qso_count}")
-        self.add_alert(f"Deleted {count} QSO(s) from display")
+        
+        # Delete from ADIF file(s)
+        total_deleted = 0
+        for adif_date, qsos in qsos_by_file.items():
+            deleted_count = self._delete_qsos_from_adif(qsos, adif_date)
+            total_deleted += deleted_count
+        
+        if total_deleted > 0:
+            self.add_alert(f"Deleted {count} QSO(s) from display and ADIF")
+        else:
+            self.add_alert(f"Deleted {count} QSO(s) from display (not found in ADIF)")
+        
+        # Re-sort the tree by time (newest first)
+        self._sort_qso_tree()
+    
+    def _delete_qsos_from_adif(self, qsos_to_delete, adif_date=None):
+        """Remove QSOs from ADIF file, matching on call + band + time
+        
+        Args:
+            qsos_to_delete: List of QSO dicts with time, call, band, mode
+            adif_date: Date string like '20260217' to specify which ADIF file
+                       If None, uses today's date
+        """
+        import datetime
+        import re
+        
+        try:
+            # Get ADIF file path
+            log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+            if adif_date is None:
+                adif_date = datetime.datetime.now().strftime('%Y%m%d')
+            adif_path = os.path.join(log_dir, f'n5zy_copilot_{adif_date}.adi')
+            
+            if not os.path.exists(adif_path):
+                print(f"ADIF Delete: File not found: {adif_path}")
+                return 0
+            
+            print(f"ADIF Delete: Searching in {adif_date} log for {len(qsos_to_delete)} QSO(s)")
+            
+            # Read entire file
+            with open(adif_path, 'r') as f:
+                content = f.read()
+            
+            # Split into header and records
+            eoh_match = re.search(r'<eoh>', content, re.IGNORECASE)
+            if not eoh_match:
+                print("ADIF Delete: No <EOH> found in file")
+                return 0
+            
+            header = content[:eoh_match.end()]
+            records_section = content[eoh_match.end():]
+            
+            # Split into individual records
+            records = re.split(r'<eor>', records_section, flags=re.IGNORECASE)
+            
+            # Build a set of (call, band, time_hhmm) tuples to delete
+            # Time in display is "HH:MM" or "HH:MM:SS" or "MM-DD HH:MM" (multi-day)
+            # In ADIF it's "HHMMSS"
+            delete_keys = set()
+            for qso in qsos_to_delete:
+                time_str = qso['time']
+                # Handle multi-day format "02-17 03:49" - extract just the time part
+                if ' ' in time_str and len(time_str) > 5:
+                    time_str = time_str.split(' ')[-1]  # Get the HH:MM part
+                # Convert display time "03:49" or "03:49:00" to "0349" for matching
+                time_clean = time_str.replace(':', '')
+                time_hhmm = time_clean[:4]  # First 4 chars = HHMM
+                key = (qso['call'].upper(), qso['band'].lower(), time_hhmm)
+                delete_keys.add(key)
+            
+            # Filter out matching records
+            deleted_count = 0
+            kept_records = []
+            
+            for record in records:
+                record = record.strip()
+                if not record:
+                    continue
+                
+                # Extract call and band from this record
+                call_match = re.search(r'<call:(\d+)>([^<\s]+)', record, re.IGNORECASE)
+                band_match = re.search(r'<band:(\d+)>([^<\s]+)', record, re.IGNORECASE)
+                
+                if call_match and band_match:
+                    # Get values using ADIF length specifier
+                    call_len = int(call_match.group(1))
+                    record_call = call_match.group(2)[:call_len].upper()
+                    
+                    band_len = int(band_match.group(1))
+                    record_band = band_match.group(2)[:band_len].lower()
+                    
+                    # Extract both time_on and time_off
+                    time_on_match = re.search(r'<time_on:(\d+)>([^<\s]+)', record, re.IGNORECASE)
+                    time_off_match = re.search(r'<time_off:(\d+)>([^<\s]+)', record, re.IGNORECASE)
+                    
+                    # If no time fields, we can't match precisely - keep the record
+                    if not time_on_match and not time_off_match:
+                        kept_records.append(record)
+                        continue
+                    
+                    # Build list of possible time keys for this record
+                    # ADIF reload displays time_on, live QSOs display time_off
+                    possible_keys = []
+                    
+                    if time_on_match:
+                        time_len = int(time_on_match.group(1))
+                        record_time = time_on_match.group(2)[:time_len]
+                        record_time_hhmm = record_time[:4]
+                        possible_keys.append((record_call, record_band, record_time_hhmm))
+                    
+                    if time_off_match:
+                        time_len = int(time_off_match.group(1))
+                        record_time = time_off_match.group(2)[:time_len]
+                        record_time_hhmm = record_time[:4]
+                        possible_keys.append((record_call, record_band, record_time_hhmm))
+                    
+                    # Check if any of the possible keys match
+                    matched_key = None
+                    for record_key in possible_keys:
+                        if record_key in delete_keys:
+                            matched_key = record_key
+                            break
+                    
+                    if matched_key:
+                        deleted_count += 1
+                        print(f"ADIF Delete: Matched and removed {record_call} on {record_band} at {matched_key[2]}")
+                        delete_keys.discard(matched_key)  # Remove so we only delete one per key
+                        continue
+                
+                kept_records.append(record)
+            
+            if deleted_count > 0:
+                # Rewrite the file
+                with open(adif_path, 'w') as f:
+                    f.write(header + '\n\n')
+                    for record in kept_records:
+                        f.write(record + ' <eor>\n')
+                
+                print(f"ADIF Delete: Removed {deleted_count} record(s) from {adif_date} log")
+            else:
+                print(f"ADIF Delete: No matching records found in {adif_date} log")
+            
+            return deleted_count
+            
+        except Exception as e:
+            print(f"ADIF Delete error: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0
+    
+    def _sort_qso_tree(self, reverse=True):
+        """Sort QSO tree by time column
+        
+        Args:
+            reverse: If True, newest first (default). If False, oldest first.
+        """
+        # Get all items and their values
+        items = []
+        for item in self.qso_tree.get_children(''):
+            values = self.qso_tree.item(item)['values']
+            items.append((item, values))
+        
+        # Sort by time column (index 0)
+        # Time formats: "HH:MM", "HH:MM:SS", "MM-DD HH:MM"
+        def sort_key(x):
+            time_str = str(x[1][0]) if x[1] else ''
+            
+            # Normalize to sortable format
+            # Multi-day: "02-17 03:49" -> "02-17 03:49"
+            # Same-day: "03:49" -> "99-99 03:49" (to sort at end when ascending)
+            # Same-day: "03:49:00" -> "99-99 03:49:00"
+            
+            if ' ' in time_str and '-' in time_str.split(' ')[0]:
+                # Multi-day format "MM-DD HH:MM" - already good
+                return time_str
+            else:
+                # Same-day format - prepend fake high date so it sorts at end for ascending
+                # (which means it sorts first for descending/newest-first)
+                return f"99-99 {time_str}"
+        
+        items.sort(key=sort_key, reverse=reverse)
+        
+        # Reorder items in tree
+        for idx, (item, values) in enumerate(items):
+            self.qso_tree.move(item, '', idx)
     
     def start_monitoring(self):
         """Start all monitoring threads"""
@@ -2974,6 +4165,9 @@ class CoPilotApp:
                 lock_callback=self.on_gps_lock_change
             )
             self.gps_monitor.start()
+            
+            # Start periodic GPS Logger display updates (every 2 seconds)
+            self._start_gps_logger_timer()
             
             # Start battery monitoring
             if self.config['victron_address'] and self.config['victron_key']:
@@ -3017,7 +4211,7 @@ class CoPilotApp:
     
     def on_gps_update(self, grid, lat, lon):
         """Called when GPS position updates"""
-        # Store current position for ADIF stamping
+        # Store position for ADIF stamping
         self.current_lat = lat
         self.current_lon = lon
         
@@ -3038,16 +4232,19 @@ class CoPilotApp:
             self.current_grid = grid
             self.grid_label.config(text=grid)
             
+            # Update Manual Entry "My Grid" field (if not in QSO Party mode)
+            if hasattr(self, 'manual_mygrid_var'):
+                current_val = self.manual_mygrid_var.get()
+                # Only update if it shows ---- or the old grid
+                if current_val in ('----', '', old_grid) or not current_val:
+                    if self.config.get('contest_mode') != 'qso_party':
+                        self.manual_mygrid_var.set(grid)
+            
             # Update QSY Advisor with new grid (tracks per-grid for rovers!)
             if self.qsy_advisor:
                 self.qsy_advisor.set_my_grid(grid)
             
-            # Update logger button (main window)
-            logger = self.config.get('contest_logger', 'n1mm')
-            logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
-            self.logger_button.config(text=f"Send to {logger_name}: {grid}", state='normal')
-            
-            # Update radios
+            # Update radios (always send grid for WSJT-X)
             self.radio_updater.update_grid(grid)
             
             # Voice announcement
@@ -3066,11 +4263,41 @@ class CoPilotApp:
                 self.voice.announce(f"Current grid is {grid}")
                 self.add_alert(f"GPS acquired. Current grid: {grid}")
         
-        # Auto-detect county in QSO Party mode
+        # Check for county changes (updates display and ADIF data)
+        # This is called AFTER grid handling so it has final say on button text
         self._check_county_change(lat, lon)
+        
+        # Update GPS Logger tab display
+        if hasattr(self, 'gps_monitor') and self.gps_monitor:
+            if hasattr(self.gps_monitor, 'get_full_data'):
+                full_data = self.gps_monitor.get_full_data()
+                self._update_gps_logger_display(full_data)
+        
+        # Update logger button based on contest mode
+        # This ensures button always shows correct value (county or grid)
+        self._update_logger_button()
+    
+    def _update_logger_button(self):
+        """Update the logger button text based on contest mode"""
+        logger = self.config.get('contest_logger', 'n1mm')
+        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
+        
+        if self.config.get('contest_mode') == 'qso_party':
+            # QSO Party mode - show county abbreviation
+            if self.current_county:
+                self.logger_button.config(text=f"Send to {logger_name}: {self.current_county}", state='normal')
+            else:
+                # No county set yet
+                self.logger_button.config(text=f"Send to {logger_name}: [Set County]", state='normal')
+        else:
+            # VHF/222up mode - show grid
+            if self.current_grid and self.current_grid != "----":
+                self.logger_button.config(text=f"Send to {logger_name}: {self.current_grid}", state='normal')
+            else:
+                self.logger_button.config(text=f"Send to {logger_name}: ----", state='disabled')
     
     def _check_county_change(self, lat, lon):
-        """Check if we've crossed into a new county. Updates for ALL modes (ADIF stamping)."""
+        """Check if we've crossed into a new county. Updates display for ALL modes."""
         if not self.county_lookup or not self.county_lookup.is_loaded:
             return
         
@@ -3078,28 +4305,37 @@ class CoPilotApp:
         county_info = self.county_lookup.lookup(lat, lon)
         
         if not county_info:
+            # Not in a US county (water, outside US, etc.)
             return
         
         # Store for ADIF stamping (works in ALL modes)
         self.current_county_info = county_info
         
-        # Check if county name changed (for ADIF stamping display)
-        if county_info.name != getattr(self, '_last_county_name', ''):
-            old_county = getattr(self, '_last_county_name', '')
+        # Check if county name changed (for any mode - updates display)
+        if county_info.name != self._last_county_name:
+            old_county = self._last_county_name
             self._last_county_name = county_info.name
             
-            # Update status bar county display if it exists
+            # Update status bar county display
             if hasattr(self, 'county_label'):
                 self.county_label.config(text=f"{county_info.name}, {county_info.state_abbrev}")
             
-            # Log county changes (only when actually changed)
+            # Update GPS Logger tab county display if it exists
+            if hasattr(self, 'gps_log_county_var'):
+                self.gps_log_county_var.set(f"{county_info.state_abbrev}: {county_info.name}")
+            
+            # Log the change
             if old_county:
+                self.add_alert(f"COUNTY: {old_county} → {county_info.name}, {county_info.state_abbrev}")
                 print(f"County: {old_county} → {county_info.name}, {county_info.state_abbrev}")
         
         # === QSO Party Mode: Additional handling ===
-        if self.config.get('contest_mode') != 'qso_party':
+        contest_mode = self.config.get('contest_mode', 'vhf')
+        if contest_mode != 'qso_party':
             return
-        if not self.config.get('county_auto_detect', True):
+        
+        auto_detect = self.config.get('county_auto_detect', True)
+        if not auto_detect:
             return
         
         # Get the QSO Party code and check if this county is in it
@@ -3110,9 +4346,10 @@ class CoPilotApp:
         party_data = self.qso_parties[party_code]
         
         # Try to map FIPS code to QSO Party abbreviation
-        county_abbrev = self._fips_to_qsoparty_abbrev(county_info.fips, county_info.name, party_data)
+        county_abbrev = self._fips_to_qsoparty_abbrev(county_info.fips, county_info.name, party_data, party_code)
         
         if not county_abbrev:
+            # County not in this QSO Party's list - might be bordering state
             return
         
         # Check if county changed
@@ -3121,108 +4358,130 @@ class CoPilotApp:
             self.current_county = county_abbrev
             self.config['qso_party_county'] = county_abbrev
             
+            print(f"QSO Party County: {old_county} → {county_abbrev}")
+            
             # Update displays
             if hasattr(self, 'county_display_var'):
                 self.county_display_var.set(county_abbrev)
-            if hasattr(self, 'county_label'):
-                self.county_label.config(text=county_abbrev)
             if hasattr(self, 'qso_party_county_var'):
                 self.qso_party_county_var.set(county_abbrev)
-            
-            # Update logger button (in QSO Party mode shows county)
-            logger = self.config.get('contest_logger', 'n1mm')
-            logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
-            self.logger_button.config(text=f"Send to {logger_name}: {county_abbrev}", state='normal')
             
             # Send to N1MM+ via RoverQTH
             if hasattr(self, 'radio_updater') and self.radio_updater:
                 self.radio_updater.send_n1mm_roverqth_county(county_abbrev)
+                self.radio_updater.set_current_county(county_abbrev)  # For process restart
             
             # Voice announcement
             if old_county:
                 self.voice.announce(f"County change. Now in {county_info.contest_name}")
-                self.add_alert(f"COUNTY CHANGE: {old_county} → {county_abbrev} ({county_info.contest_name})")
+                self.add_alert(f"QSO PARTY COUNTY: {old_county} → {county_abbrev} ({county_info.contest_name})")
             else:
                 self.voice.announce(f"Current county is {county_info.contest_name}")
-                self.add_alert(f"County detected: {county_abbrev} ({county_info.contest_name})")
+                self.add_alert(f"QSO Party county detected: {county_abbrev} ({county_info.contest_name})")
             
             # Update Manual Entry "My County" field
             if hasattr(self, 'manual_mygrid_var'):
                 self.manual_mygrid_var.set(county_abbrev)
     
-    def _fips_to_qsoparty_abbrev(self, fips, county_name, party_data):
+    def _fips_to_qsoparty_abbrev(self, fips, county_name, party_data, party_code=None):
         """Convert FIPS code or county name to QSO Party county abbreviation"""
-        # Get state abbreviation - try party_data first, then derive from party code
-        state_abbrev = party_data.get('state', '')
-        if not state_abbrev:
-            state_abbrev = self.config.get('qso_party_code', '').upper()
+        # The party_code (e.g., "OK") IS the state abbreviation
+        state_abbrev = party_code or party_data.get('state', '')
         
-        # Try to load a FIPS mapping file (e.g., OK.json)
+        # First, try to load a FIPS mapping file if it exists
         fips_map_path = Path(f"data/county_mappings/{state_abbrev}.json")
-        
         if fips_map_path.exists():
             try:
                 import json
                 with open(fips_map_path) as f:
                     fips_map = json.load(f)
-                
-                if fips in fips_map:
+                # Skip metadata key
+                if fips in fips_map and fips != '_metadata':
                     return fips_map[fips].get('code')
-                    
-                # Fallback: try name matching from JSON
-                for fips_code, entry in fips_map.items():
-                    if entry.get('name', '').upper() == county_name.upper():
-                        return entry.get('code')
             except Exception as e:
-                print(f"County mapping error: {e}")
+                print(f"Error loading {fips_map_path}: {e}")
         
-        return None
+        # Fallback: match by county name from party data
+        if not hasattr(self, '_county_name_cache'):
+            self._county_name_cache = {}
+        
+        if state_abbrev not in self._county_name_cache:
+            name_map = {}
+            counties_data = party_data.get('counties', [])
+            for item in counties_data:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    abbrev, name = item[0], item[1]
+                    normalized = name.upper().replace(' COUNTY', '').replace(' PARISH', '').strip()
+                    name_map[normalized] = abbrev
+            self._county_name_cache[state_abbrev] = name_map
+        
+        name_map = self._county_name_cache.get(state_abbrev, {})
+        normalized_input = county_name.upper().replace(' COUNTY', '').replace(' PARISH', '').strip()
+        
+        return name_map.get(normalized_input)
     
     def _stamp_qso_location(self, qso_data):
         """
-        Stamp GPS-derived location data onto a QSO for ADIF export.
+        Stamp QSO data with GPS-derived location fields for ADIF.
         
-        Adds MY_STATE, MY_CNTY, MY_LAT, MY_LON, MY_CQ_ZONE, MY_ITU_ZONE, MY_DXCC
-        for proper LoTW upload via Log4OM.
+        Adds these fields for proper LoTW/Log4OM import:
+        - my_state: State abbreviation (e.g., "OK")
+        - my_county: County name (e.g., "Oklahoma")
+        - my_lat: ADIF format latitude (e.g., "N035 28.056")
+        - my_lon: ADIF format longitude (e.g., "W097 30.984")
+        - my_country: "United States"
+        - my_cq_zone: CQ Zone (default "4" for central US)
+        - my_itu_zone: ITU Zone (default "7" for central US)
+        - my_dxcc: DXCC entity (291 = USA)
         """
-        # Use current GPS position
-        lat = self.current_lat
-        lon = self.current_lon
+        # Get state and county from current county info
+        if self.current_county_info:
+            qso_data['my_state'] = self.current_county_info.state_abbrev
+            qso_data['my_county'] = f"{self.current_county_info.state_abbrev},{self.current_county_info.name}"
         
-        # Add lat/lon in ADIF format
-        if lat is not None and lon is not None:
-            from modules.radio_updater import RadioUpdater
-            qso_data['my_lat'] = RadioUpdater.to_adif_latitude(lat)
-            qso_data['my_lon'] = RadioUpdater.to_adif_longitude(lon)
-            
-            # Use cached county info (updated on every GPS reading)
-            county_info = getattr(self, 'current_county_info', None)
-            if county_info:
-                qso_data['my_state'] = county_info.state_abbrev
-                qso_data['my_county'] = county_info.contest_name
-            else:
-                # Fallback: try fresh lookup
-                if self.county_lookup and self.county_lookup.is_loaded:
-                    county_info = self.county_lookup.lookup(lat, lon)
-                    if county_info:
-                        qso_data['my_state'] = county_info.state_abbrev
-                        qso_data['my_county'] = county_info.contest_name
+        # Get lat/lon from GPS
+        if self.current_lat is not None and self.current_lon is not None:
+            qso_data['my_lat'] = self._to_adif_latitude(self.current_lat)
+            qso_data['my_lon'] = self._to_adif_longitude(self.current_lon)
         
-        # Default US station values (can be overridden in config later)
-        qso_data.setdefault('my_country', 'United States')
-        qso_data.setdefault('my_cq_zone', '4')   # Central US
-        qso_data.setdefault('my_itu_zone', '7')  # Central US  
-        qso_data.setdefault('my_dxcc', '291')    # USA
+        # Static fields for US stations
+        qso_data['my_country'] = "United States"
+        qso_data['my_cq_zone'] = self.config.get('my_cq_zone', '4')
+        qso_data['my_itu_zone'] = self.config.get('my_itu_zone', '7')
+        qso_data['my_dxcc'] = '291'  # USA
         
         return qso_data
+    
+    def _to_adif_latitude(self, lat):
+        """Convert decimal latitude to ADIF format: N/S DDD MM.MMM"""
+        hemisphere = 'N' if lat >= 0 else 'S'
+        abs_lat = abs(lat)
+        degrees = int(abs_lat)
+        minutes = (abs_lat - degrees) * 60
+        return f"{hemisphere}{degrees:03d} {minutes:06.3f}"
+    
+    def _to_adif_longitude(self, lon):
+        """Convert decimal longitude to ADIF format: E/W DDD MM.MMM"""
+        hemisphere = 'E' if lon >= 0 else 'W'
+        abs_lon = abs(lon)
+        degrees = int(abs_lon)
+        minutes = (abs_lon - degrees) * 60
+        return f"{hemisphere}{degrees:03d} {minutes:06.3f}"
     
     def on_gps_lock_change(self, has_lock, message):
         """Called when GPS lock status changes"""
         if has_lock:
             self.add_alert(f"GPS: Lock acquired ✓")
+            self.voice.announce("GPS lock acquired")
+            # Update GPS indicator to green
+            if hasattr(self, 'gps_indicator'):
+                self.gps_indicator.config(fg='green')
         else:
             self.add_alert(f"GPS: Lock lost ✗", priority=True)
             self.voice.announce("Warning: GPS lock lost")
+            # Update GPS indicator to red
+            if hasattr(self, 'gps_indicator'):
+                self.gps_indicator.config(fg='red')
     
     def on_battery_update(self, voltage, current, soc, remaining_mins):
         """Called when battery data updates"""
@@ -3361,6 +4620,9 @@ class CoPilotApp:
                 self.aprs_client.stop()
                 self.aprs_client = None
                 self.add_alert("APRS stopped")
+            # Update APRS Messages tab status
+            if hasattr(self, 'aprs_msg_status_var'):
+                self.aprs_msg_status_var.set("Not connected")
     
     def _start_aprs(self):
         """Start APRS-IS client"""
@@ -3397,9 +4659,17 @@ class CoPilotApp:
             self.aprs_client.start()
             self.add_alert(f"APRS started: {callsign} (beacon every {beacon_interval//60} min)")
             
+            # Update APRS Messages tab status
+            if hasattr(self, 'aprs_msg_status_var'):
+                self.aprs_msg_status_var.set(f"Connecting as {callsign}...")
+                # Schedule status check after connection attempt
+                self.root.after(3000, self._update_aprs_msg_status)
+            
         except Exception as e:
             print(f"APRS: Failed to start: {e}")
             self.add_alert(f"APRS error: {e}")
+            if hasattr(self, 'aprs_msg_status_var'):
+                self.aprs_msg_status_var.set(f"Connection failed: {e}")
     
     def toggle_grid_boundary_alerts(self):
         """Toggle grid boundary alerts on/off from checkbox"""
@@ -3413,6 +4683,26 @@ class CoPilotApp:
                 self.add_alert("Grid boundary alerts enabled")
             else:
                 self.add_alert("Grid boundary alerts disabled")
+    
+    def _update_aprs_msg_status(self):
+        """Update APRS Messages tab connection status"""
+        if not hasattr(self, 'aprs_msg_status_var'):
+            return
+            
+        if hasattr(self, 'aprs_client') and self.aprs_client:
+            try:
+                stats = self.aprs_client.get_stats()
+                if stats['connected']:
+                    callsign = self.config.get('aprs_callsign', 'N5ZY')
+                    self.aprs_msg_status_var.set(f"Connected as {callsign}")
+                else:
+                    self.aprs_msg_status_var.set("Connecting...")
+                    # Retry check in 2 seconds if not connected yet
+                    self.root.after(2000, self._update_aprs_msg_status)
+            except Exception as e:
+                self.aprs_msg_status_var.set(f"Error: {e}")
+        else:
+            self.aprs_msg_status_var.set("Not connected")
     
     def _on_contest_mode_change(self, event=None):
         """Handle contest mode selection change"""
@@ -3435,17 +4725,16 @@ class CoPilotApp:
             self.config['grid_precision'] = 4  # Still use 4-char for WSJT-X
         
         self.save_config()
+        self._update_contest_mode_ui()
         
         # Update GPS monitor precision if running
         if hasattr(self, 'gps_monitor') and self.gps_monitor:
             self.gps_monitor.set_precision(self.config['grid_precision'])
         
-        # If switching TO QSO Party mode, trigger county lookup BEFORE updating UI
-        if mode_key == 'qso_party' and self.current_lat is not None and self.current_lon is not None:
+        # If switching TO QSO Party mode, immediately check county from current GPS position
+        if mode_key == 'qso_party' and self.current_lat and self.current_lon:
             self._check_county_change(self.current_lat, self.current_lon)
-        
-        # Now update UI (button text will reflect county if in QSO Party mode)
-        self._update_contest_mode_ui()
+            self._update_logger_button()
         
         self.add_alert(f"Contest mode: {CONTEST_MODES[mode_key]}")
         print(f"Contest Mode: Changed to {mode_key}, grid precision = {self.config['grid_precision']}")
@@ -3453,28 +4742,24 @@ class CoPilotApp:
     def _update_contest_mode_ui(self):
         """Update UI elements based on current contest mode"""
         mode = self.config.get('contest_mode', 'vhf')
-        logger = self.config.get('contest_logger', 'n1mm')
-        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
         
         # Update grid precision display
         precision = self.config.get('grid_precision', 4)
         self.grid_precision_label.config(text=f"{precision}-char")
         
-        # Show/hide QSO party settings and county display
+        # Show/hide QSO party settings
         # Also hide QSO party if using N3FJP (different apps per party)
+        logger = self.config.get('contest_logger', 'n1mm')
         if mode == 'qso_party' and logger == 'n1mm':
             self.qso_party_frame.grid()
-            self.county_frame.pack(side=tk.LEFT, padx=10)  # Show county in top bar
-            # Button shows county in QSO Party mode
-            county = self.current_county or self.config.get('qso_party_county', '')
-            if county:
-                self.logger_button.config(text=f"Send to {logger_name}: {county}")
         else:
             self.qso_party_frame.grid_remove()
-            self.county_frame.pack_forget()  # Hide county in top bar
-            # Button shows grid in VHF/222 modes
-            grid = self.current_grid if self.current_grid != "----" else "----"
-            self.logger_button.config(text=f"Send to {logger_name}: {grid}")
+        
+        # Always show county in top bar (useful for all modes)
+        self.county_frame.pack(side=tk.LEFT, padx=10)
+        
+        # Update logger button to show correct value (county or grid)
+        self._update_logger_button()
         
         # Update Manual Entry labels based on mode
         self._update_manual_entry_labels()
@@ -3491,12 +4776,11 @@ class CoPilotApp:
         if hasattr(self, 'radio_updater') and self.radio_updater:
             self.radio_updater.set_logger(logger)
         
-        # Update buttons and labels
-        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
-        grid = self.current_grid if self.current_grid != "----" else "----"
-        self.logger_button.config(text=f"Send to {logger_name}: {grid}")
+        # Update logger button to show correct value
+        self._update_logger_button()
         
         # Update Test Mode button
+        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
         if hasattr(self, 'test_send_button'):
             self.test_send_button.config(text=f"Send to WSJT-X + {logger_name}")
         if hasattr(self, 'test_hint_label'):
@@ -3521,12 +4805,16 @@ class CoPilotApp:
     
     def _update_manual_entry_labels(self):
         """Update Manual Entry tab labels based on contest mode and logger"""
+        # Safety check - ensure widgets exist
+        if not hasattr(self, 'their_grid_label'):
+            return
+        
         mode = self.config.get('contest_mode', 'vhf')
         logger = self.config.get('contest_logger', 'n1mm')
         logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
         
-        if mode == 'qso_party' and logger == 'n1mm':
-            # QSO Party mode with N1MM+ - use county labels
+        if mode == 'qso_party':
+            # QSO Party mode - use exchange labels
             self.their_grid_label.config(text="Their Exchange:")
             self.my_grid_label.config(text="My County:")
             self.my_grid_hint_label.config(text="(set via Settings → QSO Party)")
@@ -3535,7 +4823,7 @@ class CoPilotApp:
             if self.current_county:
                 self.manual_mygrid_var.set(self.current_county)
         else:
-            # VHF/222 Up mode or N3FJP - use grid labels
+            # VHF/222 Up mode - use grid labels
             self.their_grid_label.config(text="Their Grid:")
             self.my_grid_label.config(text="My Grid:")
             self.my_grid_hint_label.config(text="(auto-filled from GPS)")
@@ -3543,16 +4831,23 @@ class CoPilotApp:
             # Auto-fill grid from GPS
             if self.current_grid != "----":
                 self.manual_mygrid_var.set(self.current_grid)
+        
+        # Update band dropdown (HF+VHF in QSO Party, VHF only in VHF contests)
+        self._update_manual_entry_bands()
     
     def _update_manual_entry_bands(self):
         """Update Manual Entry band dropdown based on My Bands settings"""
+        if not hasattr(self, 'manual_band_combo'):
+            return
+        
+        # Always use configured "My Bands" - user only operates these bands
         my_bands = self.config.get('my_bands', ['6m', '2m', '1.25m', '70cm', '33cm', '23cm'])
-        if hasattr(self, 'manual_band_combo'):
-            self.manual_band_combo['values'] = my_bands
-            # Keep current selection if still valid
-            current = self.manual_band_var.get()
-            if current not in my_bands and my_bands:
-                self.manual_band_var.set(my_bands[0])
+        self.manual_band_combo['values'] = my_bands
+        
+        # Keep current selection if still valid
+        current = self.manual_band_var.get()
+        if current not in my_bands and my_bands:
+            self.manual_band_var.set(my_bands[0])
     
     def _update_grid_corner_bands(self):
         """Update Grid Corner available bands based on My Bands settings"""
@@ -3606,6 +4901,84 @@ class CoPilotApp:
         # Update county list
         self._update_county_list()
     
+    def _browse_scp_file(self):
+        """Browse for Super Check Partial master.dta file"""
+        filepath = filedialog.askopenfilename(
+            title="Select Super Check Partial master.dta file",
+            filetypes=[("DTA files", "*.dta"), ("SCP files", "*.scp"), ("All files", "*.*")],
+            initialfile="master.dta"
+        )
+        if filepath:
+            self.scp_file_var.set(filepath)
+            self.config['scp_file'] = filepath
+            self.save_config()
+            self._reload_scp_file()
+    
+    def _download_scp_file(self):
+        """Download Super Check Partial master.dta from supercheckpartial.com"""
+        import urllib.request
+        import threading
+        
+        url = "http://www.supercheckpartial.com/MASTER.SCP"
+        dest_path = Path("data/master.dta")
+        
+        def download():
+            try:
+                self.add_alert("Downloading SCP database...")
+                if hasattr(self, 'scp_count_label'):
+                    self.root.after(0, lambda: self.scp_count_label.config(text="(downloading...)"))
+                
+                # Ensure data directory exists
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Download the file
+                urllib.request.urlretrieve(url, dest_path)
+                
+                # Update config to use this path
+                self.config['scp_file'] = str(dest_path)
+                self.save_config()
+                
+                # Reload the database
+                self.root.after(0, lambda: self.scp_file_var.set(str(dest_path)))
+                self.root.after(0, self._reload_scp_file)
+                
+                self.root.after(0, lambda: self.add_alert(f"SCP database downloaded to {dest_path}"))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.add_alert(f"SCP download failed: {e}"))
+                if hasattr(self, 'scp_count_label'):
+                    self.root.after(0, lambda: self.scp_count_label.config(text="(download failed)"))
+        
+        # Run download in background thread
+        threading.Thread(target=download, daemon=True).start()
+    
+    def _reload_scp_file(self):
+        """Reload Super Check Partial database from file"""
+        filepath = self.scp_file_var.get()
+        self.config['scp_file'] = filepath
+        self.save_config()
+        
+        try:
+            if Path(filepath).exists():
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    self.scp_calls = [line.strip().upper() for line in f if line.strip() and not line.startswith('#')]
+                count = len(self.scp_calls)
+                self.add_alert(f"Loaded {count} callsigns from SCP database")
+                
+                # Update labels
+                if hasattr(self, 'scp_count_label'):
+                    self.scp_count_label.config(text=f"({count} callsigns loaded)")
+                if hasattr(self, 'scp_count_var'):
+                    self.scp_count_var.set(f"Loaded: {count} calls")
+            else:
+                self.scp_calls = []
+                self.add_alert("SCP file not found")
+                if hasattr(self, 'scp_count_label'):
+                    self.scp_count_label.config(text="(file not found)")
+        except Exception as e:
+            self.scp_calls = []
+            self.add_alert(f"Error loading SCP: {e}")
+    
     def _on_qsoparty_change(self, event=None):
         """Handle QSO party selection change"""
         party_code = self.qso_party_code_var.get()
@@ -3616,27 +4989,15 @@ class CoPilotApp:
         self._update_county_list()
         self.county_display_var.set("----")
         
-        # Clear county name cache to rebuild for new party
-        if hasattr(self, '_county_name_cache'):
-            self._county_name_cache.clear()
+        # Clear current county so GPS can re-detect with new party's abbreviations
+        self.current_county = ""
+        
+        # Re-check county from current GPS position for new party
+        if self.current_lat and self.current_lon:
+            self._check_county_change(self.current_lat, self.current_lon)
+            self._update_logger_button()
         
         print(f"QSO Party: Changed to {party_code}")
-    
-    def _on_county_auto_detect_change(self):
-        """Handle county auto-detect checkbox change"""
-        enabled = self.county_auto_detect_var.get()
-        self.config['county_auto_detect'] = enabled
-        self.save_config()
-        
-        if enabled:
-            self.add_alert("County auto-detection enabled")
-            if self.county_lookup and self.county_lookup.is_loaded:
-                self.voice.announce("County auto detection enabled")
-            else:
-                self.add_alert("Warning: County shapefile not loaded - auto-detect won't work")
-        else:
-            self.add_alert("County auto-detection disabled")
-            self.voice.announce("County auto detection disabled")
     
     def _update_county_list(self):
         """Update county dropdown based on selected QSO party"""
@@ -3707,15 +5068,8 @@ class CoPilotApp:
     
     def on_aprs_message(self, from_call, message, msgno):
         """Called when an APRS message is received"""
-        msg = f"APRS MSG from {from_call}: {message}"
-        self.add_alert(msg, priority=True)
-        self.voice.announce(f"APRS message from {from_call}")
-        
-        # Show popup for messages
-        self.root.after(0, lambda: messagebox.showinfo(
-            f"APRS Message from {from_call}", 
-            message
-        ))
+        # Display in APRS Messages tab inbox
+        self.root.after(0, lambda: self._display_aprs_message(from_call, message, msgno))
     
     def on_qsy_opportunity(self, callsign, worked_band, available_bands, message):
         """Called when we work a station that has other bands available"""
@@ -3851,6 +5205,60 @@ class CoPilotApp:
             else:
                 messagebox.showerror("Error", "Radio updater not initialized")
     
+    def _refresh_com_ports(self):
+        """Refresh list of available COM ports"""
+        try:
+            import serial.tools.list_ports
+            ports = [port.device for port in serial.tools.list_ports.comports()]
+            ports.sort()
+            
+            if hasattr(self, 'gps_port_combo'):
+                current = self.gps_port_var.get()
+                self.gps_port_combo['values'] = ports
+                # Keep current selection if still valid
+                if current and current not in ports:
+                    # Add current value even if not detected (might be valid but not showing)
+                    self.gps_port_combo['values'] = [current] + ports
+        except ImportError:
+            # pyserial not installed - just allow manual entry
+            if hasattr(self, 'gps_port_combo'):
+                self.gps_port_combo['values'] = ['COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8']
+    
+    def _reconnect_gps(self):
+        """Reconnect GPS with new port setting"""
+        new_port = self.gps_port_var.get()
+        
+        if not new_port:
+            messagebox.showwarning("GPS", "Please select a COM port")
+            return
+        
+        # Save to config
+        self.config['gps_port'] = new_port
+        self.save_config()
+        
+        # Stop existing GPS monitor
+        if hasattr(self, 'gps_monitor') and self.gps_monitor:
+            try:
+                self.gps_monitor.stop()
+                self.add_alert(f"GPS: Disconnected")
+            except Exception as e:
+                print(f"GPS: Error stopping: {e}")
+        
+        # Start new GPS monitor
+        try:
+            grid_precision = self.config.get('grid_precision', 4)
+            self.gps_monitor = GPSMonitor(
+                new_port, 
+                self.on_gps_update, 
+                grid_precision,
+                lock_callback=self.on_gps_lock_change
+            )
+            self.gps_monitor.start()
+            self.add_alert(f"GPS: Connecting to {new_port}...")
+        except Exception as e:
+            self.add_alert(f"GPS: Failed to connect - {e}")
+            messagebox.showerror("GPS Error", f"Could not connect to {new_port}:\n{e}")
+    
     def discover_victron(self):
         """Discover Victron devices via Bluetooth"""
         # This will be implemented in battery_monitor module
@@ -3957,6 +5365,10 @@ class CoPilotApp:
         self.config['gps_port'] = self.gps_port_var.get()
         self.config['victron_address'] = self.victron_addr_var.get()
         self.config['victron_key'] = self.victron_key_var.get()
+        
+        # QRZ credentials
+        self.config['qrz_username'] = self.qrz_username_var.get()
+        self.config['qrz_password'] = self.qrz_password_var.get()
         
         # Logger settings
         self.config['contest_logger'] = self.logger_var.get()
@@ -4087,6 +5499,10 @@ class CoPilotApp:
         rst_rcvd = self.manual_rst_rcvd_var.get().strip()
         my_grid = self.manual_mygrid_var.get().strip().upper()
         
+        # Use current GPS grid if form shows ---- or is empty
+        if not my_grid or my_grid == '----':
+            my_grid = self.current_grid if self.current_grid != '----' else ''
+        
         # Validation
         if not band:
             messagebox.showwarning("Incomplete", "Please select a band")
@@ -4094,9 +5510,20 @@ class CoPilotApp:
         if not call:
             messagebox.showwarning("Incomplete", "Please enter a callsign")
             return
-        if not grid or len(grid) < 4:
-            messagebox.showwarning("Incomplete", "Please enter their grid (4 or 6 chars)")
-            return
+        
+        # Grid/Exchange validation depends on contest mode
+        contest_mode = self.config.get('contest_mode', 'vhf')
+        if contest_mode == 'qso_party':
+            # QSO Party: exchange can be anything (state, serial, etc.)
+            if not grid:
+                messagebox.showwarning("Incomplete", "Please enter their exchange (state, serial, etc.)")
+                return
+        else:
+            # VHF contests: require 4 or 6 char grid
+            if not grid or len(grid) < 4:
+                messagebox.showwarning("Incomplete", "Please enter their grid (4 or 6 chars)")
+                return
+        
         if not freq_str:
             messagebox.showwarning("Incomplete", "Please enter frequency")
             return
@@ -4129,27 +5556,33 @@ class CoPilotApp:
         if self.radio_updater:
             self.radio_updater.queue_qso_for_relay(qso_data)
         
-        # Write to ADIF backup
+        # Write to ADIF backup with GPS-stamped location fields
         if self.radio_updater:
-            # Stamp GPS location data for LoTW before writing ADIF
-            self._stamp_qso_location(qso_data)
+            self._stamp_qso_location(qso_data)  # Add MY_STATE, MY_CNTY, etc.
             self.radio_updater._write_qso_to_adif(qso_data)
         
         # Update QSO display
         self.on_qso_logged(qso_data)
         
-        # Voice announcement
-        self.voice.announce(f"QSO logged. {call}")
-        
-        # Alert
+        # Alert (voice announcement is handled by on_qso_logged)
         self.add_alert(f"Manual QSO: {call} on {band} {mode} - {grid}")
         
-        # Clear call and grid for next QSO, keep rest
+        # Clear call and exchange/grid for next QSO, keep rest
         self.manual_call_var.set('')
         self.manual_grid_var.set('')
         
-        # Update my_grid in case GPS changed
-        self.manual_mygrid_var.set(self.current_grid)
+        # Clear SCP results
+        if hasattr(self, 'scp_listbox'):
+            self.scp_listbox.delete(0, tk.END)
+        if hasattr(self, 'scp_match_var'):
+            self.scp_match_var.set("Type 2+ chars to search...")
+        
+        # Update my_grid/county based on contest mode
+        contest_mode = self.config.get('contest_mode', 'vhf')
+        if contest_mode == 'qso_party' and self.current_county:
+            self.manual_mygrid_var.set(self.current_county)
+        elif self.current_grid != '----':
+            self.manual_mygrid_var.set(self.current_grid)
     
     
     def send_test_grid(self):
@@ -4224,11 +5657,16 @@ class CoPilotApp:
             
             messagebox.showinfo("APRS Statistics", msg)
             
-            # Update status label
+            # Update status labels (both Settings tab and APRS Messages tab)
             self.aprs_status_var.set(f"APRS: {status} | RX:{stats['packets_received']} TX:{stats['beacons_sent']}")
+            if hasattr(self, 'aprs_msg_status_var'):
+                callsign = self.config.get('aprs_callsign', 'N5ZY')
+                self.aprs_msg_status_var.set(f"Connected as {callsign}" if stats['connected'] else "Disconnected")
         else:
             messagebox.showinfo("APRS Statistics", "APRS not enabled.\n\nEnable in Settings tab.")
             self.aprs_status_var.set("APRS: Disabled")
+            if hasattr(self, 'aprs_msg_status_var'):
+                self.aprs_msg_status_var.set("Not connected")
 
 def main():
     root = tk.Tk()

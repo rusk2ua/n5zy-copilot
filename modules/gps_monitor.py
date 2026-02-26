@@ -62,6 +62,25 @@ class GPSMonitor:
         self.current_grid = None
         self.current_lat = None
         self.current_lon = None
+        
+        # Extended GPS data for GPS Logger tab
+        self.altitude_m = None
+        self.altitude_ft = None
+        self.satellites = 0
+        self.hdop = None
+        self.gps_time = None
+        self.speed_knots = None
+        self.speed_mph = None
+        self.heading = None
+        self.compass = None
+        
+        # Track statistics
+        self.track_distance_mi = 0.0
+        self.track_points = 0
+        self.track_start_time = None
+        self.last_track_lat = None
+        self.last_track_lon = None
+        self.grid_6char = None
     
     def set_precision(self, precision):
         """Change grid precision (4 or 6). Triggers callback if grid changes."""
@@ -109,8 +128,8 @@ class GPSMonitor:
                         try:
                             line = ser.readline().decode('ascii', errors='ignore').strip()
                             
+                            # Parse GGA sentences for position, altitude, satellites
                             if line.startswith('$GPGGA') or line.startswith('$GNGGA'):
-                                # Parse NMEA sentence
                                 msg = pynmea2.parse(line)
                                 
                                 # Check fix quality (0=no fix, 1=GPS fix, 2=DGPS fix, etc.)
@@ -127,23 +146,51 @@ class GPSMonitor:
                                     lat = msg.latitude
                                     lon = msg.longitude
                                     
+                                    # Store extended data
+                                    if hasattr(msg, 'altitude') and msg.altitude is not None:
+                                        self.altitude_m = float(msg.altitude)
+                                        self.altitude_ft = self.altitude_m * 3.28084
+                                    
+                                    if hasattr(msg, 'num_sats'):
+                                        try:
+                                            self.satellites = int(msg.num_sats) if msg.num_sats else 0
+                                        except:
+                                            self.satellites = 0
+                                    
+                                    if hasattr(msg, 'horizontal_dil') and msg.horizontal_dil:
+                                        try:
+                                            self.hdop = float(msg.horizontal_dil)
+                                        except:
+                                            pass
+                                    
+                                    if hasattr(msg, 'timestamp') and msg.timestamp:
+                                        self.gps_time = msg.timestamp
+                                    
+                                    # Update track distance
+                                    if self.last_track_lat is not None and self.last_track_lon is not None:
+                                        dist = self._haversine_miles(self.last_track_lat, self.last_track_lon, lat, lon)
+                                        if dist < 10:  # Sanity check - ignore jumps > 10 miles
+                                            self.track_distance_mi += dist
+                                    self.last_track_lat = lat
+                                    self.last_track_lon = lon
+                                    self.track_points += 1
+                                    
                                     # Calculate full 6-char grid, then truncate to precision
                                     full_grid = latlon_to_grid(lat, lon)
                                     grid = full_grid[:self.grid_precision]
                                     
-                                    # Always update stored position
+                                    # Always update lat/lon for GPS Logger display
                                     self.current_lat = lat
                                     self.current_lon = lon
                                     
-                                    # Check if grid changed (for logging)
-                                    grid_changed = (grid != self.current_grid)
-                                    if grid_changed:
+                                    # Store full 6-char grid for GPS Logger
+                                    self.grid_6char = full_grid
+                                    
+                                    # Only callback if grid changed (at configured precision)
+                                    if grid != self.current_grid:
                                         self.current_grid = grid
                                         print(f"GPS: Position update - {grid} ({lat:.6f}, {lon:.6f})")
-                                    
-                                    # Always callback with current position
-                                    # (needed for county tracking even when grid doesn't change)
-                                    self.callback(grid, lat, lon)
+                                        self.callback(grid, lat, lon)
                                 else:
                                     if had_fix:
                                         # Lost fix
@@ -151,6 +198,31 @@ class GPSMonitor:
                                         if self.lock_callback:
                                             self.lock_callback(False, "GPS lock lost")
                                         had_fix = False
+                            
+                            # Parse RMC sentences for speed and heading
+                            elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
+                                try:
+                                    msg = pynmea2.parse(line)
+                                    if hasattr(msg, 'spd_over_grnd') and msg.spd_over_grnd is not None:
+                                        self.speed_knots = float(msg.spd_over_grnd)
+                                        self.speed_mph = self.speed_knots * 1.15078
+                                    if hasattr(msg, 'true_course') and msg.true_course is not None:
+                                        self.heading = float(msg.true_course)
+                                        self.compass = self._heading_to_compass(self.heading)
+                                except:
+                                    pass
+                            
+                            # Parse VTG sentences for speed/heading (alternative)
+                            elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
+                                try:
+                                    msg = pynmea2.parse(line)
+                                    if hasattr(msg, 'spd_over_grnd_kmph') and msg.spd_over_grnd_kmph:
+                                        self.speed_mph = float(msg.spd_over_grnd_kmph) * 0.621371
+                                    if hasattr(msg, 'true_track') and msg.true_track:
+                                        self.heading = float(msg.true_track)
+                                        self.compass = self._heading_to_compass(self.heading)
+                                except:
+                                    pass
                         
                         except (pynmea2.ParseError, UnicodeDecodeError) as e:
                             # Ignore parse errors, just continue
@@ -175,3 +247,63 @@ class GPSMonitor:
                 'lon': self.current_lon
             }
         return None
+    
+    def get_full_data(self):
+        """Get all GPS data for GPS Logger tab display"""
+        if self.current_lat is None or self.current_lon is None:
+            return None
+        
+        # Calculate average speed if we have track data
+        avg_speed = None
+        if self.track_start_time and self.track_distance_mi > 0:
+            import datetime
+            elapsed = (datetime.datetime.now() - self.track_start_time).total_seconds() / 3600  # hours
+            if elapsed > 0:
+                avg_speed = self.track_distance_mi / elapsed
+        
+        return {
+            'lat': self.current_lat,
+            'lon': self.current_lon,
+            'grid_6char': getattr(self, 'grid_6char', self.current_grid),
+            'altitude_m': self.altitude_m,
+            'altitude_ft': self.altitude_ft,
+            'satellites': self.satellites,
+            'hdop': self.hdop,
+            'gps_time': self.gps_time,
+            'speed_mph': self.speed_mph,
+            'heading': self.heading,
+            'compass': self.compass,
+            'avg_speed_mph': avg_speed,
+            'total_distance_mi': self.track_distance_mi
+        }
+    
+    def reset_track_stats(self):
+        """Reset track statistics (called when starting a new track)"""
+        import datetime
+        self.track_distance_mi = 0.0
+        self.track_points = 0
+        self.track_start_time = datetime.datetime.now()
+        self.last_track_lat = self.current_lat
+        self.last_track_lon = self.current_lon
+    
+    def _haversine_miles(self, lat1, lon1, lat2, lon2):
+        """Calculate distance between two points in miles"""
+        import math
+        R = 3959  # Earth's radius in miles
+        
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = math.radians(lat2 - lat1)
+        delta_lon = math.radians(lon2 - lon1)
+        
+        a = math.sin(delta_lat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        
+        return R * c
+    
+    def _heading_to_compass(self, heading):
+        """Convert heading in degrees to compass direction"""
+        directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+                      'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
+        index = int((heading + 11.25) / 22.5) % 16
+        return directions[index]

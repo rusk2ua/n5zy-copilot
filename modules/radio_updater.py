@@ -32,66 +32,6 @@ class RadioUpdater:
     MSG_LOGGED_ADIF = 12
     MSG_HIGHLIGHT_CALLSIGN = 13
     
-    @staticmethod
-    def to_adif_latitude(latitude):
-        """
-        Convert decimal degrees to ADIF latitude format.
-        Format: N/S DDD MM.MMM (e.g., "N035 28.056")
-        """
-        hemisphere = "N" if latitude >= 0 else "S"
-        abs_lat = abs(latitude)
-        degrees = int(abs_lat)
-        minutes = (abs_lat - degrees) * 60
-        return f"{hemisphere}{degrees:03d} {minutes:06.3f}"
-    
-    @staticmethod
-    def to_adif_longitude(longitude):
-        """
-        Convert decimal degrees to ADIF longitude format.
-        Format: E/W DDD MM.MMM (e.g., "W097 30.984")
-        """
-        hemisphere = "E" if longitude >= 0 else "W"
-        abs_lon = abs(longitude)
-        degrees = int(abs_lon)
-        minutes = (abs_lon - degrees) * 60
-        return f"{hemisphere}{degrees:03d} {minutes:06.3f}"
-    
-    @staticmethod
-    def map_contest_id(contest_name):
-        """
-        Map N1MM contest name to ADIF CONTEST_ID.
-        N1MM uses various names, map to ADIF standard IDs.
-        """
-        if not contest_name:
-            return ""
-        
-        name = contest_name.upper()
-        
-        if "VHF" in name and "JAN" in name:
-            return "ARRL-VHF-JAN"
-        if "VHF" in name and "JUN" in name:
-            return "ARRL-VHF-JUN"
-        if "VHF" in name and "SEP" in name:
-            return "ARRL-VHF-SEP"
-        if "222" in name:
-            return "ARRL-222"
-        if "UHF" in name:
-            return "ARRL-UHF-AUG"
-        if "SPRINT" in name:
-            return "CSVHF-SPRINT"
-        if "OK" in name and "QSO" in name:
-            return "OK-QSO-PARTY"
-        if "CQ" in name and "VHF" in name:
-            return "CQ-VHF"
-        
-        # Return original if no mapping found
-        return contest_name
-    
-    @staticmethod
-    def is_rover_call(callsign):
-        """Check if callsign has /R rover suffix"""
-        return callsign.upper().endswith("/R")
-    
     def __init__(self, wsjt_instances, n1mm_host='127.0.0.1', n1mm_port=52001, 
                  n3fjp_host='127.0.0.1', n3fjp_port=1100, contest_logger='n1mm',
                  qso_callback=None, location_stamper=None):
@@ -106,7 +46,7 @@ class RadioUpdater:
             n3fjp_port: N3FJP API TCP port (default 1100)
             contest_logger: 'n1mm' or 'n3fjp'
             qso_callback: Function to call when QSO is logged (qso_data dict)
-            location_stamper: Function to stamp GPS location onto QSO for ADIF (qso_data) -> qso_data
+            location_stamper: Function to stamp QSO with GPS location data (my_state, my_cnty, etc.)
         """
         self.wsjt_instances = wsjt_instances
         self.n1mm_host = n1mm_host
@@ -115,7 +55,7 @@ class RadioUpdater:
         self.n3fjp_port = n3fjp_port
         self.contest_logger = contest_logger
         self.qso_callback = qso_callback
-        self.location_stamper = location_stamper  # For GPS-stamping ADIF records
+        self.location_stamper = location_stamper
         
         # Track WSJT-X instance IDs (learned from HeartBeat packets)
         self.wsjtx_ids = {}  # {port: (wsjtx_id, last_seen)}
@@ -140,6 +80,13 @@ class RadioUpdater:
         self.jt9_pids = set()  # Track known jt9.exe PIDs
         self.jt9_monitor_thread = None
         
+        # N1MM+ process monitoring
+        self.n1mm_pids = set()  # Track known N1MMLogger.net.exe PIDs
+        self.n1mm_monitor_thread = None
+        
+        # Current county (for QSO Party mode resending)
+        self.current_county = None
+        
         # Start listening for WSJT-X packets on ALL configured ports
         self.start_listener()
         
@@ -148,6 +95,9 @@ class RadioUpdater:
         
         # Start jt9.exe process monitor
         self._start_jt9_monitor()
+        
+        # Start N1MM+ process monitor
+        self._start_n1mm_monitor()
     
     def _start_relay_thread(self):
         """Start the QSO relay thread"""
@@ -303,6 +253,91 @@ class RadioUpdater:
                 self._send_wsjt_location(wsjtx_id, source_port, self.current_grid)
             except Exception as e:
                 print(f"Radio Update: Error resending to '{wsjtx_id}': {e}")
+    
+    def _start_n1mm_monitor(self):
+        """Start monitoring N1MMLogger.net.exe process for restarts"""
+        self.n1mm_monitor_thread = threading.Thread(target=self._n1mm_monitor_loop, daemon=True)
+        self.n1mm_monitor_thread.start()
+        print("Radio Update: Started N1MM+ process monitor")
+    
+    def _get_n1mm_pids(self):
+        """Get set of current N1MMLogger.net.exe process IDs"""
+        pids = set()
+        try:
+            import subprocess
+            # Use tasklist on Windows to find N1MMLogger.net.exe processes
+            result = subprocess.run(
+                ['tasklist', '/FI', 'IMAGENAME eq N1MMLogger.net.exe', '/FO', 'CSV', '/NH'],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split('\n'):
+                if line and 'n1mmlogger' in line.lower():
+                    # CSV format: "N1MMLogger.net.exe","1234","Console","1","123,456 K"
+                    parts = line.split(',')
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[1].strip().strip('"'))
+                            pids.add(pid)
+                        except ValueError:
+                            pass
+        except Exception as e:
+            # Silently fail - might not be on Windows or tasklist unavailable
+            pass
+        return pids
+    
+    def _n1mm_monitor_loop(self):
+        """Monitor N1MMLogger.net.exe process and resend grid/county if it restarts"""
+        import time
+        
+        # Initial scan
+        self.n1mm_pids = self._get_n1mm_pids()
+        if self.n1mm_pids:
+            print(f"Radio Update: Found N1MM+ process(es): {self.n1mm_pids}")
+        
+        while self.running:
+            try:
+                time.sleep(3)  # Check every 3 seconds
+                
+                current_pids = self._get_n1mm_pids()
+                
+                # Check for new PIDs (process restarted)
+                new_pids = current_pids - self.n1mm_pids
+                gone_pids = self.n1mm_pids - current_pids
+                
+                if new_pids:
+                    print(f"Radio Update: N1MM+ restarted! New PID(s): {new_pids}, Gone: {gone_pids}")
+                    
+                    # Update PIDs BEFORE trying to resend (prevents repeated attempts on error)
+                    self.n1mm_pids = current_pids
+                    
+                    # Wait a moment for N1MM+ to stabilize
+                    time.sleep(3)
+                    
+                    # Resend grid or county depending on mode
+                    try:
+                        self._resend_to_n1mm()
+                    except Exception as e:
+                        print(f"Radio Update: Error resending to N1MM+: {e}")
+                else:
+                    self.n1mm_pids = current_pids
+                
+            except Exception as e:
+                print(f"Radio Update: N1MM+ monitor error: {e}")
+                time.sleep(5)
+    
+    def _resend_to_n1mm(self):
+        """Resend current grid or county to N1MM+ after restart"""
+        # Try county first (QSO Party mode)
+        if self.current_county:
+            print(f"Radio Update: Resending county '{self.current_county}' to N1MM+...")
+            self.send_n1mm_roverqth_county(self.current_county)
+        elif self.current_grid:
+            print(f"Radio Update: Resending grid '{self.current_grid}' to N1MM+...")
+            self._send_n1mm_roverqth(self.current_grid)
+    
+    def set_current_county(self, county):
+        """Set the current county for process restart resending"""
+        self.current_county = county
     
     def _listen_loop(self, port):
         """Listen for WSJT-X HeartBeat packets on a specific port"""
@@ -1010,10 +1045,10 @@ class RadioUpdater:
         print(f"  Time: {qso_data['datetime_off']}")
         print(f"{'='*60}\n")
         
-        # Stamp GPS location data for LoTW (if stamper provided)
+        # Stamp QSO with GPS location data (my_state, my_cnty, my_lat, my_lon, etc.)
         if self.location_stamper:
             try:
-                qso_data = self.location_stamper(qso_data)
+                self.location_stamper(qso_data)
             except Exception as e:
                 print(f"Radio Update: Error stamping location: {e}")
         
@@ -1050,15 +1085,12 @@ class RadioUpdater:
             
             with open(adif_path, 'a') as f:
                 if write_header:
-                    # Write ADIF 3.1.4 header
-                    f.write(f"#++++++++++++++++++++++++++++++++++++\n")
-                    f.write(f"#   N5ZY Co-Pilot GPS-stamped log\n")
-                    f.write(f"#   Created: {datetime.datetime.now().strftime('%A, %B %d, %Y')}\n")
-                    f.write(f"#   For LoTW upload via Log4OM\n")
-                    f.write(f"#++++++++++++++++++++++++++++++++++++\n\n")
+                    # Write ADIF header
+                    f.write(f"ADIF Export from N5ZY VHF Co-Pilot\n")
+                    f.write(f"Generated: {datetime.datetime.now().isoformat()}\n")
                     f.write(f"<adif_ver:5>3.1.4\n")
-                    f.write(f"<programid:12>N5ZY-CoPilot\n")
-                    f.write(f"<programversion:6>1.8.32\n")
+                    f.write(f"<programid:14>N5ZY-CoPilot\n")
+                    f.write(f"<programversion:3>1.0\n")
                     f.write(f"<eoh>\n\n")
                 
                 # Build ADIF record
@@ -1083,19 +1115,52 @@ class RadioUpdater:
         """
         Build ADIF record string from QSO data.
         
-        Matches the C# AdifWriter format for Log4OM import and LoTW upload.
-        
-        Includes:
-        - GPS-derived MY_* fields (MY_STATE, MY_CNTY, MY_LAT, MY_LON, etc.)
-        - /R Rover DXCC fix (prevents Log4OM misidentifying rovers as European Russia)
-        - Contest ID mapping
-        - Full station callsign fields
+        Includes GPS-derived MY_* fields for proper LoTW/Log4OM import.
         """
         fields = []
         
-        # === QSO Core ===
+        # === Their Info ===
+        # Call
         call = qso_data['dx_call']
         fields.append(f"<call:{len(call)}>{call}")
+        
+        # Grid
+        grid = qso_data.get('dx_grid') or ''
+        if grid:
+            fields.append(f"<gridsquare:{len(grid)}>{grid}")
+        
+        # Frequency (MHz)
+        freq = f"{qso_data['freq_mhz']:.6f}"
+        fields.append(f"<freq:{len(freq)}>{freq}")
+        
+        # Band
+        band = qso_data['band']
+        fields.append(f"<band:{len(band)}>{band}")
+        
+        # Mode/submode handling per ADIF 3.1.x spec
+        # SSB submodes: USB, LSB
+        # MFSK submodes: FT8, FT4, Q65, JT65, JT9, FST4, etc.
+        mode = qso_data['mode']
+        submode = ''
+        
+        if mode.upper() in ('USB', 'LSB'):
+            submode = mode.upper()
+            mode = 'SSB'
+        elif mode.upper() in ('FT8', 'FT4', 'Q65', 'JT65', 'JT9', 'FST4', 'FST4W', 'JT4', 'WSPR', 'MSK144'):
+            submode = mode.upper()
+            mode = 'MFSK'
+        
+        fields.append(f"<mode:{len(mode)}>{mode}")
+        if submode:
+            fields.append(f"<submode:{len(submode)}>{submode}")
+        
+        # RST sent/rcvd
+        rst_sent = qso_data.get('report_sent') or ''
+        rst_rcvd = qso_data.get('report_rcvd') or ''
+        if rst_sent:
+            fields.append(f"<rst_sent:{len(rst_sent)}>{rst_sent}")
+        if rst_rcvd:
+            fields.append(f"<rst_rcvd:{len(rst_rcvd)}>{rst_rcvd}")
         
         # Date/Time
         if qso_data.get('datetime_on'):
@@ -1110,133 +1175,69 @@ class RadioUpdater:
             fields.append(f"<qso_date_off:8>{qso_date_off}")
             fields.append(f"<time_off:6>{qso_time_off}")
         
-        # Band and frequency
-        band = qso_data.get('band', '')
-        if band:
-            fields.append(f"<band:{len(band)}>{band}")
-        
-        mode = qso_data.get('mode', '')
-        if mode:
-            fields.append(f"<mode:{len(mode)}>{mode}")
-        
-        freq = f"{qso_data.get('freq_mhz', 0):.6f}"
-        fields.append(f"<freq:{len(freq)}>{freq}")
-        fields.append(f"<freq_rx:{len(freq)}>{freq}")  # Same as TX for simplex
-        
-        # RST
-        rst_sent = qso_data.get('report_sent', '')
-        rst_rcvd = qso_data.get('report_rcvd', '')
-        if rst_sent:
-            fields.append(f"<rst_sent:{len(rst_sent)}>{rst_sent}")
-        if rst_rcvd:
-            fields.append(f"<rst_rcvd:{len(rst_rcvd)}>{rst_rcvd}")
-        
-        # Power
-        power = qso_data.get('tx_power', '')
-        if power:
-            fields.append(f"<tx_pwr:{len(power)}>{power}")
-        
-        # === Contest Fields ===
-        contest_id = qso_data.get('contest_id', '')
-        if contest_id:
-            mapped_id = self.map_contest_id(contest_id)
-            fields.append(f"<contest_id:{len(mapped_id)}>{mapped_id}")
-        
-        # Serial numbers
-        stx = qso_data.get('stx', '')
-        srx = qso_data.get('srx', '')
-        if stx:
-            fields.append(f"<stx:{len(stx)}>{stx}")
-        if srx:
-            fields.append(f"<srx:{len(srx)}>{srx}")
-        
-        # Exchange strings
-        exch_sent = qso_data.get('exchange_sent', '') or qso_data.get('stx_string', '')
-        exch_rcvd = qso_data.get('exchange_rcvd', '') or qso_data.get('srx_string', '')
-        if exch_sent:
-            fields.append(f"<stx_string:{len(exch_sent)}>{exch_sent}")
-        if exch_rcvd:
-            fields.append(f"<srx_string:{len(exch_rcvd)}>{exch_rcvd}")
-        
-        # === Their Info ===
-        grid = qso_data.get('dx_grid', '')
-        if grid:
-            fields.append(f"<gridsquare:{len(grid)}>{grid}")
-        
-        # /R Rover DXCC Fix: If contacted station is a rover (/R), add explicit
-        # DXCC fields to prevent Log4OM from misinterpreting /R as European Russia
-        if self.is_rover_call(call):
-            # For US rovers, set explicit US DXCC info
-            fields.append("<dxcc:3>291")              # United States
-            fields.append("<cqz:1>4")                 # CQ Zone 4 (central US default)
-            fields.append("<ituz:1>7")                # ITU Zone 7 (central US default)
-            fields.append("<country:13>United States")
-            # Derive prefix from callsign (e.g., N5 from N5ZY/R)
-            prefix = self._derive_prefix(call)
-            if prefix:
-                fields.append(f"<pfx:{len(prefix)}>{prefix}")
-        
         # === My Info (GPS-derived for LoTW) ===
-        my_call = qso_data.get('my_call', '')
+        # Station callsign
+        my_call = qso_data.get('my_call') or ''
         if my_call:
             fields.append(f"<station_callsign:{len(my_call)}>{my_call}")
             fields.append(f"<operator:{len(my_call)}>{my_call}")
-            # Owner callsign (without /R suffix)
-            owner = my_call.split('/')[0]
-            fields.append(f"<owner_callsign:{len(owner)}>{owner}")
         
         # My grid (6-char from GPS)
-        my_grid = qso_data.get('my_grid', '')
+        my_grid = qso_data.get('my_grid') or ''
         if my_grid:
             fields.append(f"<my_gridsquare:{len(my_grid)}>{my_grid}")
         
         # My state (from county lookup)
-        my_state = qso_data.get('my_state', '')
+        my_state = qso_data.get('my_state') or ''
         if my_state:
             fields.append(f"<my_state:{len(my_state)}>{my_state}")
         
-        # My county (from county lookup - just county name for Log4OM)
-        my_county = qso_data.get('my_county', '')
+        # My county (from county lookup - format: "ST,County Name")
+        my_county = qso_data.get('my_county') or ''
         if my_county:
             fields.append(f"<my_cnty:{len(my_county)}>{my_county}")
         
-        # My lat/lon (ADIF format)
-        my_lat = qso_data.get('my_lat', '')
-        my_lon = qso_data.get('my_lon', '')
+        # My lat/lon (ADIF format: N/S DDD MM.MMM, E/W DDD MM.MMM)
+        my_lat = qso_data.get('my_lat') or ''
+        my_lon = qso_data.get('my_lon') or ''
         if my_lat:
             fields.append(f"<my_lat:{len(my_lat)}>{my_lat}")
         if my_lon:
             fields.append(f"<my_lon:{len(my_lon)}>{my_lon}")
         
-        # My country/zone info (US defaults)
-        my_country = qso_data.get('my_country', 'United States')
-        fields.append(f"<my_country:{len(my_country)}>{my_country}")
+        # My country (USA)
+        my_country = qso_data.get('my_country') or ''
+        if my_country:
+            fields.append(f"<my_country:{len(my_country)}>{my_country}")
         
-        my_cq_zone = qso_data.get('my_cq_zone', '4')
-        fields.append(f"<my_cq_zone:{len(my_cq_zone)}>{my_cq_zone}")
+        # My CQ Zone
+        my_cq_zone = qso_data.get('my_cq_zone') or ''
+        if my_cq_zone:
+            fields.append(f"<my_cq_zone:{len(my_cq_zone)}>{my_cq_zone}")
         
-        my_itu_zone = qso_data.get('my_itu_zone', '7')
-        fields.append(f"<my_itu_zone:{len(my_itu_zone)}>{my_itu_zone}")
+        # My ITU Zone
+        my_itu_zone = qso_data.get('my_itu_zone') or ''
+        if my_itu_zone:
+            fields.append(f"<my_itu_zone:{len(my_itu_zone)}>{my_itu_zone}")
         
-        my_dxcc = qso_data.get('my_dxcc', '291')
-        fields.append(f"<my_dxcc:{len(my_dxcc)}>{my_dxcc}")
+        # My DXCC (291 = USA)
+        my_dxcc = qso_data.get('my_dxcc') or ''
+        if my_dxcc:
+            fields.append(f"<my_dxcc:{len(my_dxcc)}>{my_dxcc}")
         
-        # Rover QTH (4-char grid for VHF contests)
-        rover_qth = qso_data.get('rover_qth', '')
-        if not rover_qth and my_grid:
-            rover_qth = my_grid[:4]  # Use first 4 chars of 6-char grid
-        if rover_qth:
-            fields.append(f"<app_n5zy_roverqth:{len(rover_qth)}>{rover_qth}")
+        # === Contest Fields ===
+        # Power
+        power = qso_data.get('tx_power', '')
+        if power:
+            fields.append(f"<tx_pwr:{len(power)}>{power}")
         
-        # === QSL Status (defaults for new QSOs) ===
-        fields.append("<qsl_sent:1>N")
-        fields.append("<qsl_rcvd:1>N")
-        fields.append("<lotw_qsl_sent:1>N")
-        fields.append("<lotw_qsl_rcvd:1>N")
-        fields.append("<qso_complete:1>Y")
-        
-        # === Program ID ===
-        fields.append("<programid:12>N5ZY-CoPilot")
+        # Contest exchange (may not exist for manual QSOs)
+        exch_sent = qso_data.get('exchange_sent', '')
+        exch_rcvd = qso_data.get('exchange_rcvd', '')
+        if exch_sent:
+            fields.append(f"<stx_string:{len(exch_sent)}>{exch_sent}")
+        if exch_rcvd:
+            fields.append(f"<srx_string:{len(exch_rcvd)}>{exch_rcvd}")
         
         # Comment (include source - WSJT-X instance name or Manual)
         wsjtx_id = qso_data.get('wsjtx_id', 'Manual Entry')
@@ -1246,34 +1247,14 @@ class RadioUpdater:
             comment += f" - {comments}"
         fields.append(f"<comment:{len(comment)}>{comment}")
         
+        # Program identifier
+        prog_id = "N5ZY-CoPilot"
+        fields.append(f"<programid:{len(prog_id)}>{prog_id}")
+        
         # End of record
         fields.append("<eor>")
         
         return ' '.join(fields)
-    
-    @staticmethod
-    def _derive_prefix(callsign):
-        """
-        Derive the callsign prefix (e.g., N5 from N5ZY, KF0 from KF0QQQ)
-        Used for the PFX field in ADIF.
-        """
-        if not callsign:
-            return ""
-        
-        # Remove /R, /P, /M suffixes
-        base_call = callsign.split('/')[0].upper()
-        
-        # Find where the prefix ends (letters then number)
-        prefix = ""
-        found_digit = False
-        
-        for ch in base_call:
-            prefix += ch
-            if ch.isdigit():
-                found_digit = True
-                break
-        
-        return prefix if found_digit else base_call
     
     def _send_qso_to_n1mm(self, qso_data):
         """
@@ -1401,7 +1382,17 @@ class RadioUpdater:
             fields.append(f"<gridsquare:{len(grid)}>{grid}")
         
         mode = qso_data['mode']
+        submode = ''
+        
+        # For N1MM+ relay, keep original mode (FT8, Q65, etc.) since N1MM understands them
+        # Only convert SSB submodes
+        if mode.upper() in ('USB', 'LSB'):
+            submode = mode.upper()
+            mode = 'SSB'
+        
         fields.append(f"<mode:{len(mode)}>{mode}")
+        if submode:
+            fields.append(f"<submode:{len(submode)}>{submode}")
         
         rst_sent = qso_data['report_sent'] or '-10'
         rst_rcvd = qso_data['report_rcvd'] or '-10'
@@ -1490,25 +1481,11 @@ class RadioUpdater:
         """
         Handle ADIF Logged message from WSJT-X
         
-        This is an alternative to QSO Logged - contains raw ADIF string
+        NOTE: We intentionally do NOT write this to our ADIF file.
+        We already handle QSO Logged (type 5) messages and write our own
+        ADIF with GPS-stamped MY_STATE, MY_CNTY, MY_LAT, MY_LON fields.
+        Writing WSJT-X's raw ADIF would create duplicates.
         """
-        print(f"Radio Update: Received ADIF from {wsjtx_id}:")
-        print(f"  {adif_data['adif_record'][:100]}...")
-        
-        # Append to daily ADIF file
-        try:
-            import os
-            log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
-            os.makedirs(log_dir, exist_ok=True)
-            
-            today = datetime.datetime.now().strftime('%Y%m%d')
-            adif_path = os.path.join(log_dir, f'n5zy_copilot_{today}.adi')
-            
-            with open(adif_path, 'a') as f:
-                f.write(adif_data['adif_record'] + "\n")
-            
-            print(f"Radio Update: ADIF appended to {adif_path}")
-            
-        except Exception as e:
-            print(f"Radio Update: Error writing ADIF: {e}")
+        print(f"Radio Update: Received ADIF from {wsjtx_id} (ignored - using QSO Logged instead)")
+        # Intentionally not writing to ADIF - we handle this via _handle_qso_logged()
 
