@@ -382,12 +382,19 @@ class APRSClient:
             # Use lock to prevent duplicate alerts from near-simultaneous packets
             with self.seen_stations_lock:
                 now = time.time()
-                if from_call in self.seen_stations:
-                    last_alert = self.seen_stations[from_call]
-                    if now - last_alert < self.alert_cooldown:
-                        return
+                last_alert = self.seen_stations.get(from_call, 0)
+                
+                # Must have at least 2 seconds between alerts (catches rapid-fire APRS-IS duplicates)
+                # and respect the full cooldown period
+                min_gap = max(2, self.alert_cooldown)
+                time_since_last = now - last_alert
+                
+                if time_since_last < min_gap:
+                    # Suppressed - too soon since last alert
+                    return
                 
                 # Mark as seen BEFORE alerting (inside lock)
+                self.seen_stations[from_call] = now
                 self.seen_stations[from_call] = now
             
             # Alert! (outside lock)
