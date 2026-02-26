@@ -7,7 +7,7 @@ A Python/tkinter dashboard for amateur radio VHF/UHF contest roving. Integrates 
 ## Features
 
 - **GPS Tracking** - VK172 USB dongle, automatic grid square and county detection, grid boundary proximity alerts
-- **Multi-Radio WSJT-X** - Monitor up to 4 WSJT-X instances simultaneously via UDP
+- **Multi-Radio WSJT-X** - Monitor up to 4 WSJT-X instances simultaneously via UDP, updates 'My Grid' automatically through AutoGrid
 - **Contest Logging** - N1MM+ (TCP/RoverQTH) and N3FJP integration with ADIF output
 - **APRS** - APRS-IS messaging, position beaconing, nearby mobile station alerts with voice announcements
 - **PSK Reporter** - Band opening detection, Sporadic-E alerts, multi-hop Sp-E "PULL OVER!" alerts
