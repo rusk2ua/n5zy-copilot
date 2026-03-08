@@ -101,7 +101,14 @@ class PSKMonitor:
         self.alert_spe = config.get('psk_alert_spe', True)
         self.alert_unusual_modes = config.get('psk_alert_modes', True)
         self.alert_crossref_qsy = config.get('psk_crossref_qsy', True)
-        
+
+        # Priority station alerts (DX!)
+        self.priority_enabled = config.get('psk_priority_enabled', False)
+        self.priority_stations = set()
+        priority_str = config.get('psk_priority_stations', '')
+        if priority_str:
+            self.priority_stations = {s.strip().upper() for s in priority_str.split(',') if s.strip()}
+
         # Contest mode affects which bands we care about
         self.contest_mode = config.get('contest_mode', 'vhf')
         
@@ -305,7 +312,7 @@ class PSKMonitor:
                 except Exception as e:
                     print(f"PSK Monitor: Error in poll_complete_callback: {e}")
             
-        except urllib.error.URLError as e:
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             print(f"PSK Monitor: Network error: {e}")
         except Exception as e:
             print(f"PSK Monitor: Error polling: {e}")
@@ -494,7 +501,10 @@ class PSKMonitor:
             
             # Store ALL spots for UI display (not just propagation events)
             self._add_recent_spot(spot, band, qso_dist, prop_mode)
-            
+
+            # Check for priority station (DX!)
+            self._check_priority_station(spot, band)
+
             if prop_mode == 'line_of_sight':
                 continue  # Don't alert for line-of-sight, but still shown in UI
             
@@ -682,6 +692,31 @@ class PSKMonitor:
             message = f"   ↳ {callsign} has multiple bands: {bands_str}"
             self._send_alert(message, self.PRIORITY_INFO, None, None)
     
+    def _check_priority_station(self, spot, band):
+        """Check if spot involves a priority station and send alert to Alerts tab"""
+        if not self.priority_enabled or not self.priority_stations:
+            return
+
+        sender_call = spot.get('sender_call', '').upper()
+        receiver_call = spot.get('receiver_call', '').upper()
+
+        matched_call = None
+        if sender_call in self.priority_stations:
+            matched_call = sender_call
+        elif receiver_call in self.priority_stations:
+            matched_call = receiver_call
+
+        if not matched_call:
+            return
+
+        alert_key = f"dx_priority_{matched_call}_{band}"
+        if self._is_alert_recent(alert_key):
+            return
+
+        message = f"DX! {matched_call} spotted on {band} via PSK Reporter"
+        # voice_msg=None — voice is handled by copilot.py shared dedup via _on_psk_spot
+        self._send_alert(message, 0, None, alert_key)
+
     def _add_recent_spot(self, spot, band, distance, prop_mode):
         """Add spot to recent spots list and notify UI"""
         spot_data = {
@@ -690,12 +725,24 @@ class PSKMonitor:
             'nearby_call': spot['nearby_call'],  # Station near you
             'far_call': spot.get('far_call', ''),  # Station to try!
             'grid': spot.get('far_grid', ''),
-            'distance': int(distance) if distance else 0,
+            'qso_distance': int(distance) if distance else 0,
+            'my_distance': int(spot.get('far_dist', 0)) if spot.get('far_dist') else 0,
             'bearing': self._bearing_to_compass(spot.get('far_bearing', 0)),
             'prop_mode': prop_mode,
             'mode': spot.get('mode', 'FT8'),
         }
-        
+
+        # Check for priority station match (DX!)
+        if self.priority_enabled and self.priority_stations:
+            sender_call = spot.get('sender_call', '').upper()
+            receiver_call = spot.get('receiver_call', '').upper()
+            if sender_call in self.priority_stations:
+                spot_data['priority_dx'] = True
+                spot_data['priority_call'] = sender_call
+            elif receiver_call in self.priority_stations:
+                spot_data['priority_dx'] = True
+                spot_data['priority_call'] = receiver_call
+
         with self.lock:
             self.recent_spots.insert(0, spot_data)
             

@@ -34,7 +34,10 @@ CONTEST_MODES = {
     'vhf': 'VHF Contest (4-char grid)',
     '222up': '222 MHz and Up (6-char grid)',
     'qso_party': 'State QSO Party (County)',
+    'daily_dx': 'Daily DX (4-char grid)',
 }
+
+LOGGER_NAMES = {'n1mm': 'N1MM+', 'n3fjp': 'N3FJP', 'log4om': 'Log4OM'}
 
 # HF bands (including WARC bands) for QSO parties
 HF_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m']
@@ -138,6 +141,8 @@ class CoPilotApp:
                 'n1mm_udp_port': 52001,  # N1MM+ JTDX TCP port (Config → Configure Ports → WSJT/JTDX Setup)
                 'n3fjp_host': '127.0.0.1',
                 'n3fjp_port': 1100,  # N3FJP default API port
+                'log4om_host': '127.0.0.1',
+                'log4om_port': 2333,  # Log4OM v2 default UDP port
                 'active_bands': ['50', '144', '222', '432', '902', '1296', '10368'],
                 # APRS-IS settings
                 'aprs_enabled': False,
@@ -145,6 +150,19 @@ class CoPilotApp:
                 'aprs_beacon_interval': 600,  # 10 minutes
                 'aprs_alert_radius': 10,  # miles
                 'aprs_comment': 'N5ZY.ORG Rover!',  # Beacon comment
+                # Priority station alerts
+                'psk_priority_enabled': False,
+                'psk_priority_stations': '',  # Legacy — migrated to dx_priority_stations
+                'dx_priority_stations': '',   # DX! CSV (Daily DX mode)
+                'ap_priority_stations': '',   # AP! CSV (VHF/QSO Party modes)
+                'dx2_enabled': False,         # DX2 — new DXCC entity alerts
+                'dx3_enabled': False,         # DX3 — new band/mode alerts
+                'dx3_granularity': 'band',    # 'band' | 'mode' | 'band_mode'
+                'lotw_username': '',
+                'lotw_password': '',
+                'lotw_auto_refresh': True,
+                'lotw_last_refresh': '',      # ISO date
+                'cty_last_update': '',        # ISO date
                 # Grid boundary alerts
                 'grid_boundary_alerts': False,  # Voice alerts when approaching grid edges
                 # QRZ lookup (fallback when SCP has no matches)
@@ -368,7 +386,7 @@ class CoPilotApp:
         self._start_wsjt_watchdog()
         
         # Logger ROVERQTH/Grid button (always visible at top)
-        logger_name = "N1MM+" if self.config.get('contest_logger', 'n1mm') == 'n1mm' else "N3FJP"
+        logger_name = LOGGER_NAMES.get(self.config.get('contest_logger', 'n1mm'), 'N1MM+')
         self.logger_button = ttk.Button(status_frame, text=f"Send to {logger_name}: ----", 
                                        command=self.send_grid_to_logger, state='disabled')
         self.logger_button.pack(side=tk.RIGHT, padx=10)
@@ -396,7 +414,7 @@ class CoPilotApp:
                   padding=[('selected', [12, 8])])  # Slightly taller when selected
         
         # Notebook for tabs
-        notebook = ttk.Notebook(self.root)
+        self.notebook = notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Tab 1: Alerts
@@ -446,7 +464,8 @@ class CoPilotApp:
         # Initialize bands from config after tabs are created
         self._update_manual_entry_bands()
         self._update_grid_corner_bands()
-        
+        self._update_vhf_tab_states()
+
         # Initialize manual entry labels based on contest mode
         self._update_manual_entry_labels()
         
@@ -719,15 +738,15 @@ class CoPilotApp:
         ttk.Button(victron_frame, text="Discover Devices", 
                    command=self.discover_victron).grid(row=2, column=1, pady=5, sticky=tk.E)
         
-        # Contest Logger Settings (N1MM+ or N3FJP)
-        logger_frame = ttk.LabelFrame(frame, text="Contest Logger", padding=10)
+        # Logger Settings (N1MM+, N3FJP, or Log4OM v2)
+        logger_frame = ttk.LabelFrame(frame, text="Logger", padding=10)
         logger_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Logger selection dropdown
         ttk.Label(logger_frame, text="Logger:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self.logger_var = tk.StringVar(value=self.config.get('contest_logger', 'n1mm'))
         logger_combo = ttk.Combobox(logger_frame, textvariable=self.logger_var,
-                                    values=['n1mm', 'n3fjp'], width=10, state='readonly')
+                                    values=['n1mm', 'n3fjp', 'log4om'], width=10, state='readonly')
         logger_combo.grid(row=0, column=1, sticky=tk.W, pady=2, padx=5)
         logger_combo.bind('<<ComboboxSelected>>', self._on_logger_change)
         
@@ -748,9 +767,24 @@ class CoPilotApp:
         ttk.Label(self.n3fjp_settings_frame, text="N3FJP API Port:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self.n3fjp_port_var = tk.StringVar(value=str(self.config.get('n3fjp_port', 1100)))
         ttk.Entry(self.n3fjp_settings_frame, textvariable=self.n3fjp_port_var, width=10).grid(row=0, column=1, pady=2, padx=5)
-        ttk.Label(self.n3fjp_settings_frame, text="(Settings → Application Program Interface)", 
+        ttk.Label(self.n3fjp_settings_frame, text="(Settings → Application Program Interface)",
                  foreground="gray").grid(row=0, column=2, sticky=tk.W, pady=2)
-        
+
+        # Log4OM v2 settings frame
+        self.log4om_settings_frame = ttk.Frame(logger_frame)
+        self.log4om_settings_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=(5,0))
+
+        ttk.Label(self.log4om_settings_frame, text="Log4OM IP:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.log4om_host_var = tk.StringVar(value=self.config.get('log4om_host', '127.0.0.1'))
+        ttk.Entry(self.log4om_settings_frame, textvariable=self.log4om_host_var, width=15).grid(row=0, column=1, pady=2, padx=5)
+
+        ttk.Label(self.log4om_settings_frame, text="UDP Port:").grid(row=0, column=2, sticky=tk.W, pady=2, padx=(10,0))
+        self.log4om_port_var = tk.StringVar(value=str(self.config.get('log4om_port', 2333)))
+        ttk.Entry(self.log4om_settings_frame, textvariable=self.log4om_port_var, width=8).grid(row=0, column=3, pady=2, padx=5)
+
+        ttk.Label(self.log4om_settings_frame, text="(Log4OM v2 → Settings → UDP)",
+                 foreground="gray").grid(row=0, column=4, sticky=tk.W, pady=2)
+
         # Show/hide appropriate settings
         self._update_logger_ui()
         
@@ -762,7 +796,7 @@ class CoPilotApp:
                  foreground="gray").grid(row=0, column=0, columnspan=8, sticky=tk.W, pady=(0,5))
         
         # All possible bands
-        self.all_bands = ['160m', '80m', '40m', '20m', '15m', '10m',  # HF
+        self.all_bands = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m',  # HF
                           '6m', '2m', '1.25m', '70cm', '33cm', '23cm',  # VHF/UHF
                           '13cm', '9cm', '5cm', '3cm', '1.2cm', '6mm', '4mm', '2mm', '1mm']  # Microwave
         
@@ -925,7 +959,98 @@ class CoPilotApp:
         
         ttk.Label(psk_frame, text="Polls every 5 min (PSK Reporter rate limit). Priority: 🔴MSp-E 🟠Sp-E/70cm+ 🟡Sp-E/2m 🔵Opening",
                  foreground="gray").grid(row=6, column=0, columnspan=3, sticky=tk.W, pady=2)
-        
+
+        # ── Priority Station Alerts ──
+        ttk.Separator(psk_frame, orient=tk.HORIZONTAL).grid(row=7, column=0, columnspan=3, sticky=tk.EW, pady=(10,5))
+
+        ttk.Label(psk_frame, text="Priority Station Alerts",
+                 font=('TkDefaultFont', 9, 'bold')).grid(row=8, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        self.psk_priority_enabled_var = tk.BooleanVar(value=self.config.get('psk_priority_enabled', False))
+        ttk.Checkbutton(psk_frame, text="Enable Priority Station Alerts",
+                       variable=self.psk_priority_enabled_var).grid(row=9, column=0, sticky=tk.W, pady=2)
+
+        # DX! stations (Daily DX mode)
+        ttk.Label(psk_frame, text="DX! Stations:").grid(row=10, column=0, sticky=tk.W, pady=2)
+        # Migrate old key
+        dx_default = self.config.get('dx_priority_stations', '') or self.config.get('psk_priority_stations', '')
+        self.dx_priority_stations_var = tk.StringVar(value=dx_default)
+        ttk.Entry(psk_frame, textvariable=self.dx_priority_stations_var, width=50).grid(
+            row=10, column=1, columnspan=2, sticky=tk.W, pady=2, padx=5)
+        ttk.Label(psk_frame, text="DX expedition callsigns — Daily DX mode only (e.g., 3Y0K,J51A,T8OK)",
+                 foreground="gray").grid(row=11, column=0, columnspan=3, sticky=tk.W, padx=(20,0))
+
+        # AP! stations (VHF/QSO Party modes)
+        ttk.Label(psk_frame, text="AP! Stations:").grid(row=12, column=0, sticky=tk.W, pady=2)
+        self.ap_priority_stations_var = tk.StringVar(value=self.config.get('ap_priority_stations', ''))
+        ttk.Entry(psk_frame, textvariable=self.ap_priority_stations_var, width=50).grid(
+            row=12, column=1, columnspan=2, sticky=tk.W, pady=2, padx=5)
+        ttk.Label(psk_frame, text="Family/friends/club — VHF Contest & QSO Party modes only",
+                 foreground="gray").grid(row=13, column=0, columnspan=3, sticky=tk.W, padx=(20,0))
+
+        # ── DXCC Alerts ──
+        ttk.Separator(psk_frame, orient=tk.HORIZONTAL).grid(row=14, column=0, columnspan=3, sticky=tk.EW, pady=(10,5))
+        ttk.Label(psk_frame, text="DXCC Alerts (requires LoTW + cty.dat)",
+                 font=('TkDefaultFont', 9, 'bold')).grid(row=15, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        dxcc_frame = ttk.Frame(psk_frame)
+        dxcc_frame.grid(row=16, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        self.dx2_enabled_var = tk.BooleanVar(value=self.config.get('dx2_enabled', False))
+        ttk.Checkbutton(dxcc_frame, text="DX2 — Alert on new DXCC entity",
+                       variable=self.dx2_enabled_var).pack(side=tk.LEFT, padx=(0, 20))
+
+        self.dx3_enabled_var = tk.BooleanVar(value=self.config.get('dx3_enabled', False))
+        ttk.Checkbutton(dxcc_frame, text="DX3 — Alert on new:",
+                       variable=self.dx3_enabled_var).pack(side=tk.LEFT)
+
+        self.dx3_granularity_var = tk.StringVar(value=self.config.get('dx3_granularity', 'band'))
+        dx3_combo = ttk.Combobox(dxcc_frame, textvariable=self.dx3_granularity_var,
+                                  values=['band', 'mode', 'band_mode'], width=12, state='readonly')
+        dx3_combo.pack(side=tk.LEFT, padx=5)
+
+        # ── LoTW Integration ──
+        ttk.Separator(psk_frame, orient=tk.HORIZONTAL).grid(row=17, column=0, columnspan=3, sticky=tk.EW, pady=(10,5))
+        ttk.Label(psk_frame, text="LoTW Integration",
+                 font=('TkDefaultFont', 9, 'bold')).grid(row=18, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        lotw_cred_frame = ttk.Frame(psk_frame)
+        lotw_cred_frame.grid(row=19, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        ttk.Label(lotw_cred_frame, text="Username:").pack(side=tk.LEFT)
+        self.lotw_username_var = tk.StringVar(value=self.config.get('lotw_username', ''))
+        ttk.Entry(lotw_cred_frame, textvariable=self.lotw_username_var, width=15).pack(side=tk.LEFT, padx=(5, 15))
+
+        ttk.Label(lotw_cred_frame, text="Password:").pack(side=tk.LEFT)
+        self.lotw_password_var = tk.StringVar(value=self.config.get('lotw_password', ''))
+        ttk.Entry(lotw_cred_frame, textvariable=self.lotw_password_var, width=15, show='*').pack(side=tk.LEFT, padx=5)
+
+        lotw_btn_frame = ttk.Frame(psk_frame)
+        lotw_btn_frame.grid(row=20, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        ttk.Button(lotw_btn_frame, text="Refresh Now", command=self._lotw_refresh).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(lotw_btn_frame, text="Load from File...", command=self._lotw_load_file).pack(side=tk.LEFT, padx=(0, 15))
+
+        self.lotw_auto_refresh_var = tk.BooleanVar(value=self.config.get('lotw_auto_refresh', True))
+        ttk.Checkbutton(lotw_btn_frame, text="Auto-refresh weekly",
+                       variable=self.lotw_auto_refresh_var).pack(side=tk.LEFT)
+
+        self.lotw_status_var = tk.StringVar(value=self._get_lotw_status_text())
+        ttk.Label(psk_frame, textvariable=self.lotw_status_var, foreground="gray").grid(
+            row=21, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        # ── cty.dat ──
+        ttk.Separator(psk_frame, orient=tk.HORIZONTAL).grid(row=22, column=0, columnspan=3, sticky=tk.EW, pady=(10,5))
+        ttk.Label(psk_frame, text="cty.dat (Country File)",
+                 font=('TkDefaultFont', 9, 'bold')).grid(row=23, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        cty_frame = ttk.Frame(psk_frame)
+        cty_frame.grid(row=24, column=0, columnspan=3, sticky=tk.W, pady=2)
+
+        self.cty_status_var = tk.StringVar(value=self._get_cty_status_text())
+        ttk.Label(cty_frame, textvariable=self.cty_status_var).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Button(cty_frame, text="Update from AD1C", command=self._cty_update).pack(side=tk.LEFT)
+
         # Slack Webhook Settings
         slack_frame = ttk.LabelFrame(frame, text="Slack Notifications - Grid Activation Alerts", padding=10)
         slack_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -1435,8 +1560,8 @@ class CoPilotApp:
         self.test_grid_var = tk.StringVar(value="EM15")
         ttk.Entry(manual_frame, textvariable=self.test_grid_var, width=15).grid(row=0, column=1, sticky=tk.W, pady=5, padx=5)
         
-        # Test button - sends to WSJT-X AND logger (N1MM+ or N3FJP)
-        logger_name = "N1MM+" if self.config.get('contest_logger', 'n1mm') == 'n1mm' else "N3FJP"
+        # Test button - sends to WSJT-X AND logger
+        logger_name = LOGGER_NAMES.get(self.config.get('contest_logger', 'n1mm'), 'N1MM+')
         self.test_send_button = ttk.Button(manual_frame, text=f"Send to WSJT-X + {logger_name}", 
                    command=self.send_test_grid)
         self.test_send_button.grid(row=1, column=0, columnspan=2, pady=5, padx=5, sticky=tk.EW)
@@ -1718,125 +1843,154 @@ class CoPilotApp:
             subprocess.Popen(['xdg-open', log_dir])
     
     def create_psk_monitor_tab(self, parent):
-        """Create PSK Reporter Monitor tab for band activity and propagation"""
+        """Create PSK Reporter Monitor tab with split Priority/Propagation panes"""
         frame = ttk.Frame(parent)
-        
+
         # Header with status
         header_frame = ttk.Frame(frame)
         header_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(header_frame, text="PSK Reporter Monitor", 
+
+        ttk.Label(header_frame, text="PSK Reporter Monitor",
                  font=('Arial', 12, 'bold')).pack(side=tk.LEFT)
-        
+
         self.psk_status_var = tk.StringVar(value="Status: Not started")
         ttk.Label(header_frame, textvariable=self.psk_status_var,
                  foreground='gray').pack(side=tk.LEFT, padx=20)
-        
+
         # Enable checkbox (uses shared variable from __init__)
         ttk.Checkbutton(header_frame, text="Enable Monitoring",
                        variable=self.psk_enabled_var,
                        command=self._toggle_psk_monitor).pack(side=tk.RIGHT, padx=10)
-        
+
         # Main content - split into left (alerts) and right (band activity)
         content_frame = ttk.Frame(frame)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Left side - Propagation Alerts
-        alerts_frame = ttk.LabelFrame(content_frame, text="Propagation Alerts", padding=5)
-        alerts_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,5))
-        
-        # Alerts treeview - shows nearby station and far station they worked
-        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'dist', 'dir', 'prop', 'mode')
-        self.psk_alert_tree = ttk.Treeview(alerts_frame, columns=alert_columns, 
+
+        # Left side - Vertical PanedWindow with Priority + Propagation panes
+        self.psk_paned = tk.PanedWindow(content_frame, orient=tk.VERTICAL, sashwidth=4)
+        self.psk_paned.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,5))
+
+        # ── Priority Alerts pane (top) — pinned, time-aged ──
+        self.psk_priority_frame = ttk.LabelFrame(self.psk_paned, text="Priority Alerts", padding=5)
+
+        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
+
+        self.psk_priority_tree = ttk.Treeview(self.psk_priority_frame, columns=alert_columns,
+                                               show='headings', height=5)
+        for col, heading, width in [
+            ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
+            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('qso_dist', 'QSO Dist', 55),
+            ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
+        ]:
+            self.psk_priority_tree.heading(col, text=heading)
+            self.psk_priority_tree.column(col, width=width)
+
+        # Priority tree tags
+        self.psk_priority_tree.tag_configure('dx', foreground='magenta', font=('Arial', 9, 'bold'))
+        self.psk_priority_tree.tag_configure('dx2', foreground='cyan', font=('Arial', 9, 'bold'))
+        self.psk_priority_tree.tag_configure('dx3', foreground='dodgerblue', font=('Arial', 9, 'bold'))
+        self.psk_priority_tree.tag_configure('ap', foreground='lime green', font=('Arial', 9, 'bold'))
+
+        pri_scroll = ttk.Scrollbar(self.psk_priority_frame, orient=tk.VERTICAL,
+                                    command=self.psk_priority_tree.yview)
+        self.psk_priority_tree.configure(yscrollcommand=pri_scroll.set)
+        self.psk_priority_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        pri_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.psk_priority_tree.bind('<Double-1>', self._psk_open_pskreporter)
+
+        # ── Propagation Alerts pane (bottom) — rolling, sortable, no row cap ──
+        prop_frame = ttk.LabelFrame(self.psk_paned, text="Propagation Alerts", padding=5)
+
+        self.psk_alert_tree = ttk.Treeview(prop_frame, columns=alert_columns,
                                            show='headings', height=12)
-        
-        self.psk_alert_tree.heading('time', text='Time')
-        self.psk_alert_tree.heading('pri', text='P')
-        self.psk_alert_tree.heading('band', text='Band')
-        self.psk_alert_tree.heading('nearby', text='Nearby')
-        self.psk_alert_tree.heading('far', text='Far (Try!)')
-        self.psk_alert_tree.heading('dist', text='Dist')
-        self.psk_alert_tree.heading('dir', text='Dir')
-        self.psk_alert_tree.heading('prop', text='Prop')
-        self.psk_alert_tree.heading('mode', text='Mode')
-        
-        self.psk_alert_tree.column('time', width=50)
-        self.psk_alert_tree.column('pri', width=25)
-        self.psk_alert_tree.column('band', width=45)
-        self.psk_alert_tree.column('nearby', width=75)
-        self.psk_alert_tree.column('far', width=75)
-        self.psk_alert_tree.column('dist', width=45)
-        self.psk_alert_tree.column('dir', width=30)
-        self.psk_alert_tree.column('prop', width=50)
-        self.psk_alert_tree.column('mode', width=45)
-        
-        # Configure row colors for priority levels
+
+        for col, heading, width in [
+            ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
+            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('qso_dist', 'QSO Dist', 55),
+            ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
+        ]:
+            self.psk_alert_tree.heading(col, text=heading,
+                                         command=lambda c=col: self._sort_psk_column(c))
+            self.psk_alert_tree.column(col, width=width)
+
+        # Configure row colors for priority levels (propagation pane)
         self.psk_alert_tree.tag_configure('p1', foreground='red', font=('Arial', 9, 'bold'))
         self.psk_alert_tree.tag_configure('p2', foreground='orange', font=('Arial', 9, 'bold'))
         self.psk_alert_tree.tag_configure('p3', foreground='goldenrod')
         self.psk_alert_tree.tag_configure('p4', foreground='green')
+        self.psk_alert_tree.tag_configure('dx', foreground='magenta', font=('Arial', 9, 'bold'))
+        self.psk_alert_tree.tag_configure('dx2', foreground='cyan', font=('Arial', 9, 'bold'))
+        self.psk_alert_tree.tag_configure('dx3', foreground='dodgerblue', font=('Arial', 9, 'bold'))
+        self.psk_alert_tree.tag_configure('ap', foreground='lime green', font=('Arial', 9, 'bold'))
         self.psk_alert_tree.tag_configure('info', foreground='gray')
-        
-        psk_scrollbar = ttk.Scrollbar(alerts_frame, orient=tk.VERTICAL, 
+
+        psk_scrollbar = ttk.Scrollbar(prop_frame, orient=tk.VERTICAL,
                                       command=self.psk_alert_tree.yview)
         self.psk_alert_tree.configure(yscrollcommand=psk_scrollbar.set)
-        
+
         self.psk_alert_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         psk_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         # Double-click to open PSK Reporter
         self.psk_alert_tree.bind('<Double-1>', self._psk_open_pskreporter)
-        
+
+        # Track sort state for propagation pane
+        self._psk_sort_col = None
+        self._psk_sort_reverse = False
+
+        # Add panes to PanedWindow
+        # Priority pane is conditionally added by _update_priority_pane_visibility()
+        self.psk_paned.add(prop_frame, stretch='always')
+        self._psk_priority_pane_visible = False
+
         # Right side - Band Activity Summary
-        activity_frame = ttk.LabelFrame(content_frame, text="Band Activity", padding=5)
-        activity_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
-        
-        # Band activity labels
+        psk_activity_outer = ttk.LabelFrame(content_frame, text="Band Activity", padding=5)
+        psk_activity_outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
+
+        # Container for band rows (rebuilt when My Bands changes)
+        self.psk_band_rows_frame = ttk.Frame(psk_activity_outer)
+        self.psk_band_rows_frame.pack(fill=tk.X)
+
+        # Build band activity rows from My Bands config
         self.band_activity_labels = {}
-        bands_order = ['23cm', '33cm', '70cm', '1.25m', '2m', '6m']
-        
-        for band in bands_order:
-            row_frame = ttk.Frame(activity_frame)
-            row_frame.pack(fill=tk.X, pady=2)
-            
-            ttk.Label(row_frame, text=f"{band}:", width=6).pack(side=tk.LEFT)
-            
-            activity_var = tk.StringVar(value="--")
-            self.band_activity_labels[band] = activity_var
-            
-            lbl = ttk.Label(row_frame, textvariable=activity_var, width=8,
-                           font=('Arial', 10, 'bold'))
-            lbl.pack(side=tk.LEFT, padx=5)
-        
-        # Legend
-        ttk.Separator(activity_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
-        ttk.Label(activity_frame, text="Priority:", font=('Arial', 9, 'bold')).pack(anchor=tk.W)
-        ttk.Label(activity_frame, text="P1! MSp-E UHF+", font=('Arial', 8)).pack(anchor=tk.W)
-        ttk.Label(activity_frame, text="P2! MSp-E 2m", font=('Arial', 8)).pack(anchor=tk.W)
-        ttk.Label(activity_frame, text="P2  Sp-E UHF", font=('Arial', 8)).pack(anchor=tk.W)
-        ttk.Label(activity_frame, text="P3  Sp-E 2m/6m", font=('Arial', 8)).pack(anchor=tk.W)
-        ttk.Label(activity_frame, text="P4  Tropo", font=('Arial', 8)).pack(anchor=tk.W)
-        ttk.Label(activity_frame, text="--  LOS/Other", font=('Arial', 8)).pack(anchor=tk.W)
-        
+        self._rebuild_band_activity_labels()
+
+        # Legend (stays fixed below band rows)
+        ttk.Separator(psk_activity_outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+        ttk.Label(psk_activity_outer, text="Priority:", font=('Arial', 9, 'bold')).pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="DX! Priority Stn", font=('Arial', 8), foreground='magenta').pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="DX2 New Entity", font=('Arial', 8), foreground='cyan').pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="DX3 New Band/Mode", font=('Arial', 8), foreground='dodgerblue').pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="AP! Friends/Family", font=('Arial', 8), foreground='lime green').pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="P1! MSp-E UHF+", font=('Arial', 8)).pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="P2! MSp-E 2m", font=('Arial', 8)).pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="P2  Sp-E UHF", font=('Arial', 8)).pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="P3  Sp-E 2m/6m", font=('Arial', 8)).pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="P4  Tropo", font=('Arial', 8)).pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="--  LOS/Other", font=('Arial', 8)).pack(anchor=tk.W)
+
         # Bottom - Settings summary
         settings_frame = ttk.Frame(frame)
         settings_frame.pack(fill=tk.X, padx=5, pady=5)
-        
+
         self.psk_settings_var = tk.StringVar(value="VHF radius: 250 mi | Baseline: 15 min | Poll: 5 min")
         ttk.Label(settings_frame, textvariable=self.psk_settings_var,
                  foreground='gray').pack(side=tk.LEFT)
-        
+
         # Last updated timestamp
         self.psk_last_update_var = tk.StringVar(value="Last updated: --:--:--")
         ttk.Label(settings_frame, textvariable=self.psk_last_update_var,
                  foreground='gray').pack(side=tk.LEFT, padx=20)
-        
+
         ttk.Button(settings_frame, text="Clear Alerts",
                   command=self._clear_psk_alerts).pack(side=tk.RIGHT, padx=5)
-        
+
         ttk.Button(settings_frame, text="Refresh Now",
                   command=self._refresh_psk_now).pack(side=tk.RIGHT, padx=5)
-        
+
+        # Set initial priority pane visibility (after a short delay for UI to settle)
+        self.root.after(500, self._update_priority_pane_visibility)
+
         return frame
     
     def _toggle_psk_monitor(self):
@@ -1877,71 +2031,128 @@ class CoPilotApp:
         self.add_alert("PSK Monitor: Stopped")
     
     def _on_psk_spot(self, spot_data):
-        """Handle individual PSK spot (for display in tree)"""
+        """Handle individual PSK spot — route to Priority or Propagation pane"""
         try:
             from datetime import datetime
-            
+
             now = datetime.now()
             time_str = now.strftime('%H:%M')
-            
+
             # Update last updated timestamp
             self.psk_last_update_var.set(f"Last updated: {now.strftime('%H:%M:%S')}")
-            
+
             # Determine priority based on prop mode and band
             prop_mode = spot_data.get('prop_mode', '')
             band = spot_data.get('band', '')
-            
-            # Use text indicators instead of emojis (render better in treeview)
+
+            # Check PriorityEngine first (DX!, AP!, DX2, DX3)
+            priority_result = None
+            if hasattr(self, 'priority_engine') and self.priority_engine:
+                # Check both sender and receiver calls
+                for call_key in ['nearby_call', 'far_call']:
+                    call = spot_data.get(call_key, '')
+                    if call:
+                        mode = spot_data.get('mode', 'FT8')
+                        priority_result = self.priority_engine.check(call, band, mode)
+                        if priority_result:
+                            break
+
+            # Also check legacy priority_dx flag
+            if not priority_result and spot_data.get('priority_dx'):
+                # Legacy DX! path — build a result-like dict for routing
+                pri_text = 'DX!'
+                row_tag = 'dx'
+                matched_call = spot_data.get('priority_call', '')
+                if matched_call:
+                    self._priority_voice_alert(matched_call, band)
+                # Route to priority pane
+                self._insert_priority_spot(time_str, pri_text, row_tag, spot_data, prop_mode)
+                self._update_psk_band_activity()
+                return
+
+            if priority_result:
+                pri_text = priority_result.code
+                row_tag = priority_result.tag
+                # Fire voice alert with dedup
+                self._priority_voice_alert(priority_result.callsign, band,
+                                            voice_msg=priority_result.voice_msg)
+                # Route to Priority pane
+                self._insert_priority_spot(time_str, pri_text, row_tag, spot_data, prop_mode)
+                self._update_psk_band_activity()
+                return
+
+            # No priority match — determine propagation priority for Propagation pane
             if prop_mode == 'multi_hop_e' and band in ['70cm', '1.25m', '33cm', '23cm']:
-                pri_text = 'P1!'  # Critical - MSp-E on UHF+
+                pri_text = 'P1!'
                 row_tag = 'p1'
             elif prop_mode == 'multi_hop_e' and band == '2m':
-                pri_text = 'P2!'  # High - MSp-E on 2m
+                pri_text = 'P2!'
                 row_tag = 'p2'
             elif prop_mode == 'sporadic_e' and band in ['70cm', '1.25m']:
-                pri_text = 'P2'   # High - Sp-E on UHF
+                pri_text = 'P2'
                 row_tag = 'p2'
             elif prop_mode == 'sporadic_e':
-                pri_text = 'P3'   # Medium - Sp-E on 2m/6m
+                pri_text = 'P3'
                 row_tag = 'p3'
             elif prop_mode == 'tropo':
-                pri_text = 'P4'   # Low - Tropo
+                pri_text = 'P4'
                 row_tag = 'p4'
             else:
-                pri_text = '--'   # Info - LOS or unknown
+                pri_text = '--'
                 row_tag = 'info'
-            
+
             # Format prop mode for display
             prop_display = {
-                'multi_hop_e': 'MSp-E',
-                'sporadic_e': 'Sp-E',
-                'tropo': 'Tropo',
-                'line_of_sight': 'LOS',
+                'multi_hop_e': 'MSp-E', 'sporadic_e': 'Sp-E',
+                'tropo': 'Tropo', 'line_of_sight': 'LOS',
             }.get(prop_mode, prop_mode)
-            
+
             self.psk_alert_tree.insert('', 0, values=(
-                time_str,
-                pri_text,
-                band,
-                spot_data.get('nearby_call', ''),   # Station near you
-                spot_data.get('far_call', ''),      # Station to try!
-                spot_data.get('distance', ''),
+                time_str, pri_text, band,
+                spot_data.get('nearby_call', ''),
+                spot_data.get('far_call', ''),
+                spot_data.get('qso_distance', ''),
+                spot_data.get('my_distance', ''),
                 spot_data.get('bearing', ''),
                 prop_display,
                 spot_data.get('mode', 'FT8')
             ), tags=(row_tag,))
-            
+
             # Update band activity display
             self._update_psk_band_activity()
-            
-            # Trim old entries
-            children = self.psk_alert_tree.get_children()
-            if len(children) > 50:
-                for child in children[50:]:
-                    self.psk_alert_tree.delete(child)
-                    
+
+            # No row cap — rely on scrollbar (removed old 50-row trim)
+
         except Exception as e:
             print(f"Error adding PSK spot to tree: {e}")
+
+    def _insert_priority_spot(self, time_str, pri_text, row_tag, spot_data, prop_mode):
+        """Insert a spot into the Priority Alerts pane"""
+        prop_display = {
+            'multi_hop_e': 'MSp-E', 'sporadic_e': 'Sp-E',
+            'tropo': 'Tropo', 'line_of_sight': 'LOS',
+        }.get(prop_mode, prop_mode)
+
+        self.psk_priority_tree.insert('', 0, values=(
+            time_str, pri_text, spot_data.get('band', ''),
+            spot_data.get('nearby_call', ''),
+            spot_data.get('far_call', ''),
+            spot_data.get('qso_distance', ''),
+            spot_data.get('my_distance', ''),
+            spot_data.get('bearing', ''),
+            prop_display,
+            spot_data.get('mode', 'FT8')
+        ), tags=(row_tag,))
+
+        # Cap at 25 rows
+        children = self.psk_priority_tree.get_children()
+        if len(children) > 25:
+            for child in children[25:]:
+                self.psk_priority_tree.delete(child)
+
+        # Ensure priority pane is visible
+        if not self._psk_priority_pane_visible:
+            self._update_priority_pane_visibility(force_show=True)
     
     def _on_psk_alert(self, message, priority):
         """Handle PSK Monitor alert - adds to main Alerts tab only"""
@@ -1955,21 +2166,239 @@ class CoPilotApp:
         self.psk_last_update_var.set(f"Last updated: {now.strftime('%H:%M:%S')} ({spot_count} spots)")
     
     def _clear_psk_alerts(self):
-        """Clear PSK alert display"""
+        """Clear Propagation alerts display (not Priority pane)"""
         for item in self.psk_alert_tree.get_children():
             self.psk_alert_tree.delete(item)
-    
+
+    # ── Priority Pane Management ──
+
+    def _update_priority_pane_visibility(self, force_show=False):
+        """Show/hide Priority Alerts pane based on mode and enabled alerts"""
+        if not hasattr(self, 'psk_paned'):
+            return
+
+        show = force_show
+        if not show:
+            mode = self.config.get('contest_mode', 'vhf')
+            dx_stations = self.config.get('dx_priority_stations', '')
+            ap_stations = self.config.get('ap_priority_stations', '')
+            dx2 = self.config.get('dx2_enabled', False)
+            dx3 = self.config.get('dx3_enabled', False)
+
+            if mode == 'daily_dx' and (dx_stations or dx2 or dx3):
+                show = True
+            if mode in ('vhf', '222up', 'qso_party') and (ap_stations or dx2 or dx3):
+                show = True
+
+        if show and not self._psk_priority_pane_visible:
+            # Insert Priority pane at the top of the PanedWindow
+            self.psk_paned.add(self.psk_priority_frame, before=self.psk_paned.panes()[0],
+                                stretch='never', height=150)
+            self._psk_priority_pane_visible = True
+        elif not show and self._psk_priority_pane_visible:
+            self.psk_paned.forget(self.psk_priority_frame)
+            self._psk_priority_pane_visible = False
+
+    def _age_priority_alerts(self):
+        """Remove priority alerts older than 30 minutes. Runs on a timer."""
+        if not hasattr(self, 'psk_priority_tree'):
+            return
+
+        from datetime import datetime
+        now = datetime.now()
+
+        for item in self.psk_priority_tree.get_children():
+            values = self.psk_priority_tree.item(item, 'values')
+            if values:
+                try:
+                    # Parse time from "HH:MM" format
+                    spot_time = datetime.strptime(values[0], '%H:%M').replace(
+                        year=now.year, month=now.month, day=now.day)
+                    if (now - spot_time).total_seconds() > 1800:  # 30 minutes
+                        self.psk_priority_tree.delete(item)
+                except Exception:
+                    pass
+
+        # Schedule next aging check in 60 seconds
+        if hasattr(self, 'root'):
+            self.root.after(60000, self._age_priority_alerts)
+
+    def _sort_psk_column(self, col):
+        """Sort Propagation pane by column click"""
+        if self._psk_sort_col == col:
+            self._psk_sort_reverse = not self._psk_sort_reverse
+        else:
+            self._psk_sort_col = col
+            self._psk_sort_reverse = False
+
+        # Get all items with values
+        items = [(self.psk_alert_tree.set(k, col), k) for k in self.psk_alert_tree.get_children()]
+
+        # Numeric sort for distance columns
+        numeric_cols = {'qso_dist', 'my_dist'}
+        if col in numeric_cols:
+            def sort_key(item):
+                try:
+                    return float(item[0]) if item[0] else 0
+                except ValueError:
+                    return 0
+            items.sort(key=sort_key, reverse=self._psk_sort_reverse)
+        else:
+            items.sort(key=lambda t: t[0], reverse=self._psk_sort_reverse)
+
+        # Rearrange items
+        for index, (_, k) in enumerate(items):
+            self.psk_alert_tree.move(k, '', index)
+
+        # Update heading indicators
+        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
+        heading_names = {
+            'time': 'Time', 'pri': 'P', 'band': 'Band', 'nearby': 'Nearby',
+            'far': 'Far (Try!)', 'qso_dist': 'QSO Dist', 'my_dist': 'My Dist',
+            'my_dir': 'My Dir', 'prop': 'Prop', 'mode': 'Mode',
+        }
+        for c in alert_columns:
+            indicator = ''
+            if c == col:
+                indicator = ' ▼' if self._psk_sort_reverse else ' ▲'
+            self.psk_alert_tree.heading(c, text=heading_names[c] + indicator)
+
+    # ── LoTW Integration Handlers ──
+
+    def _lotw_refresh(self):
+        """Download LoTW credits in background thread"""
+        import threading
+        username = self.lotw_username_var.get().strip()
+        password = self.lotw_password_var.get().strip()
+        if not username or not password:
+            from tkinter import messagebox
+            messagebox.showwarning("LoTW", "Please enter LoTW username and password first.")
+            return
+
+        self.lotw_status_var.set("Downloading from LoTW...")
+
+        def _on_done(success):
+            if success:
+                self.config['lotw_last_refresh'] = datetime.now().isoformat()[:10]
+                self.save_config()
+                # Enrich cty.dat with LoTW mapping
+                if hasattr(self, 'cty_lookup') and self.cty_lookup:
+                    self.cty_lookup.set_dxcc_mapping(self.lotw_client.get_prefix_to_dxcc_mapping())
+                # Reconfigure priority engine
+                if hasattr(self, 'priority_engine') and self.priority_engine:
+                    self.priority_engine.configure(self.config, self.cty_lookup, self.lotw_client)
+            self.root.after(0, lambda: self.lotw_status_var.set(self._get_lotw_status_text()))
+
+        if not hasattr(self, 'lotw_client') or not self.lotw_client:
+            from modules.lotw_client import LoTWClient
+            self.lotw_client = LoTWClient(self.config)
+            self.lotw_client.cty_lookup = getattr(self, 'cty_lookup', None)
+        self.lotw_client.download_credits_async(callback=_on_done,
+                                                  username=username, password=password)
+
+    def _lotw_load_file(self):
+        """Load LoTW ADIF from file"""
+        from tkinter import filedialog
+        filepath = filedialog.askopenfilename(
+            title="Select LoTW ADIF File",
+            filetypes=[("ADIF files", "*.adi *.adif"), ("All files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        if not hasattr(self, 'lotw_client') or not self.lotw_client:
+            from modules.lotw_client import LoTWClient
+            self.lotw_client = LoTWClient(self.config)
+            self.lotw_client.cty_lookup = getattr(self, 'cty_lookup', None)
+
+        success = self.lotw_client.load_from_file(filepath)
+        if success:
+            # Cache it
+            self.lotw_client.save_cache('data/lotw_credits.adi',
+                                         open(filepath, 'r', encoding='utf-8', errors='ignore').read())
+            self.config['lotw_last_refresh'] = datetime.now().isoformat()[:10]
+            self.save_config()
+            # Enrich cty.dat
+            if hasattr(self, 'cty_lookup') and self.cty_lookup:
+                self.cty_lookup.set_dxcc_mapping(self.lotw_client.get_prefix_to_dxcc_mapping())
+            if hasattr(self, 'priority_engine') and self.priority_engine:
+                self.priority_engine.configure(self.config, self.cty_lookup, self.lotw_client)
+            from tkinter import messagebox
+            status = self.lotw_client.get_status()
+            messagebox.showinfo("LoTW", f"Loaded {status['record_count']} QSOs, "
+                              f"{status['entity_count']} confirmed entities")
+        else:
+            from tkinter import messagebox
+            messagebox.showerror("LoTW", "Failed to parse ADIF file")
+
+        self.lotw_status_var.set(self._get_lotw_status_text())
+
+    def _get_lotw_status_text(self):
+        """Build LoTW status label text"""
+        if hasattr(self, 'lotw_client') and self.lotw_client and self.lotw_client.is_loaded():
+            status = self.lotw_client.get_status()
+            last = status.get('last_refresh', '')[:10] or 'Unknown'
+            return f"Loaded: {status['entity_count']} entities, {status['record_count']} QSOs | Last refresh: {last}"
+        last = self.config.get('lotw_last_refresh', '')
+        if last:
+            return f"Not loaded (last refresh: {last})"
+        return "Not loaded — download or load file to enable DX2/DX3 alerts"
+
+    def _cty_update(self):
+        """Download latest cty.dat from AD1C in background"""
+        import threading
+        self.cty_status_var.set("Downloading from AD1C...")
+
+        def _worker():
+            if not hasattr(self, 'cty_lookup') or not self.cty_lookup:
+                from modules.cty_lookup import CTYLookup
+                self.cty_lookup = CTYLookup()
+            success = self.cty_lookup.update_from_ad1c('data')
+            if success:
+                self.cty_lookup.load_dxcc_mapping('data/dxcc_entities.json')
+                self.config['cty_last_update'] = datetime.now().isoformat()[:10]
+                self.save_config()
+                if hasattr(self, 'priority_engine') and self.priority_engine:
+                    self.priority_engine.configure(self.config, self.cty_lookup,
+                                                    getattr(self, 'lotw_client', None))
+            self.root.after(0, lambda: self.cty_status_var.set(self._get_cty_status_text()))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _get_cty_status_text(self):
+        """Build cty.dat status label text"""
+        if hasattr(self, 'cty_lookup') and self.cty_lookup and self.cty_lookup._loaded:
+            status = self.cty_lookup.get_status()
+            last = self.config.get('cty_last_update', 'bundled')
+            return f"Loaded: {status['entity_count']} entities, {status['prefix_count']} prefixes | Updated: {last}"
+        return "Not loaded — click Update to download"
+
+    def _check_lotw_auto_refresh(self):
+        """Check if LoTW data needs auto-refresh (called 30s after startup)"""
+        if not self.config.get('lotw_auto_refresh', True):
+            return
+        if self.config.get('contest_mode', 'vhf') != 'daily_dx':
+            return
+        if not self.config.get('lotw_username', '') or not self.config.get('lotw_password', ''):
+            return
+        if hasattr(self, 'lotw_client') and self.lotw_client and not self.lotw_client.needs_refresh():
+            return
+        print("LoTW: Auto-refreshing (weekly, Daily DX mode active)...")
+        self._lotw_refresh()
+
     def _psk_open_pskreporter(self, event):
-        """Open PSK Reporter map for selected spot"""
+        """Open PSK Reporter map for selected spot (works for both trees)"""
         import webbrowser
-        
-        selection = self.psk_alert_tree.selection()
+
+        # Determine which tree was clicked
+        tree = event.widget
+        selection = tree.selection()
         if not selection:
             return
-        
+
         item = selection[0]
-        values = self.psk_alert_tree.item(item, 'values')
-        # columns: time, pri, band, nearby, far, dist, dir, prop, mode
+        values = tree.item(item, 'values')
+        # columns: time, pri, band, nearby, far, qso_dist, my_dist, my_dir, prop, mode
         if len(values) >= 5:
             far_call = values[4]  # The "far" callsign is who to look up
             if far_call and far_call != '--':
@@ -1996,7 +2425,39 @@ class CoPilotApp:
                     label_var.set(f"{count} spots")
                 else:
                     label_var.set("--")
-    
+
+    def _rebuild_band_activity_labels(self):
+        """Rebuild the Band Activity panel from My Bands config.
+        Called at startup and when settings are saved."""
+        # Destroy existing band row widgets
+        for widget in list(self.psk_band_rows_frame.winfo_children()):
+            widget.destroy()
+
+        self.band_activity_labels = {}
+
+        # Canonical display order (top = highest band, bottom = lowest)
+        display_order = ['1mm', '2mm', '4mm', '6mm', '1.2cm', '3cm', '5cm', '9cm',
+                         '13cm', '23cm', '33cm', '70cm', '1.25m', '2m', '6m',
+                         '10m', '12m', '15m', '17m', '20m', '30m', '40m', '60m', '80m', '160m']
+
+        my_bands = self.config.get('my_bands', ['6m', '2m', '1.25m', '70cm', '33cm', '23cm'])
+
+        # Filter to only selected bands, in canonical order
+        bands_to_show = [b for b in display_order if b in my_bands]
+
+        for band in bands_to_show:
+            row_frame = ttk.Frame(self.psk_band_rows_frame)
+            row_frame.pack(fill=tk.X, pady=2)
+
+            ttk.Label(row_frame, text=f"{band}:", width=6).pack(side=tk.LEFT)
+
+            activity_var = tk.StringVar(value="--")
+            self.band_activity_labels[band] = activity_var
+
+            lbl = ttk.Label(row_frame, textvariable=activity_var, width=8,
+                           font=('Arial', 10, 'bold'))
+            lbl.pack(side=tk.LEFT, padx=5)
+
     def create_grid_corner_tab(self, parent):
         """Create Grid Corner QSO Tracker tab for rover-to-rover operations"""
         frame = ttk.Frame(parent)
@@ -2956,11 +3417,28 @@ class CoPilotApp:
             return  # Tab not created yet
             
         if data is None:
-            # Lost fix
-            self.gps_log_position_var.set("No GPS Lock")
+            # No data at all (GPS monitor not running)
+            self.gps_log_position_var.set("GPS not connected")
             self.gps_log_grid_var.set("------")
             self.gps_log_time_var.set("--:--:--")
             self.gps_log_sats_var.set("0")
+            self.gps_log_altitude_var.set("--- ft")
+            self.gps_log_accuracy_var.set("---")
+            self.gps_log_heading_var.set("---")
+            self.gps_log_speed_var.set("--- mph")
+            self.gps_log_avgspeed_var.set("--- mph")
+            return
+
+        if not data.get('has_fix', True):
+            # Receiving NMEA but no lock yet — show satellite count
+            sats = data.get('satellites', 0)
+            if sats > 0:
+                self.gps_log_position_var.set(f"Acquiring lock... ({sats} satellite{'s' if sats != 1 else ''})")
+            else:
+                self.gps_log_position_var.set("Searching for satellites...")
+            self.gps_log_grid_var.set("------")
+            self.gps_log_time_var.set("--:--:--")
+            self.gps_log_sats_var.set(str(sats))
             self.gps_log_altitude_var.set("--- ft")
             self.gps_log_accuracy_var.set("---")
             self.gps_log_heading_var.set("---")
@@ -4185,14 +4663,59 @@ class CoPilotApp:
                 n1mm_port=self.config.get('n1mm_udp_port', 52001),
                 n3fjp_host=self.config.get('n3fjp_host', '127.0.0.1'),
                 n3fjp_port=self.config.get('n3fjp_port', 1100),
+                log4om_host=self.config.get('log4om_host', '127.0.0.1'),
+                log4om_port=self.config.get('log4om_port', 2333),
                 contest_logger=self.config.get('contest_logger', 'n1mm'),
                 qso_callback=self.on_qso_logged,
                 location_stamper=self._stamp_qso_location
             )
-            
+
+            # Load cty.dat for callsign → DXCC entity resolution
+            from modules.cty_lookup import CTYLookup
+            self.cty_lookup = CTYLookup()
+            cty_path = Path('data/cty.dat')
+            if cty_path.exists():
+                self.cty_lookup.load_file(str(cty_path))
+                dxcc_path = Path('data/dxcc_entities.json')
+                if dxcc_path.exists():
+                    self.cty_lookup.load_dxcc_mapping(str(dxcc_path))
+
+            # Load LoTW cache (if exists)
+            from modules.lotw_client import LoTWClient
+            self.lotw_client = LoTWClient(self.config)
+            self.lotw_client.cty_lookup = self.cty_lookup  # For CALL→DXCC fallback
+            lotw_cache = Path('data/lotw_credits.adi')
+            if lotw_cache.exists():
+                self.lotw_client.load_from_file(str(lotw_cache))
+                if self.cty_lookup._loaded:
+                    self.cty_lookup.set_dxcc_mapping(self.lotw_client.get_prefix_to_dxcc_mapping())
+
+            # Build PriorityEngine
+            from modules.priority_engine import PriorityEngine
+            self.priority_engine = PriorityEngine()
+            self.priority_engine.configure(self.config, self.cty_lookup, self.lotw_client)
+
             # Start log monitoring
-            self.log_monitor = LogMonitor(self.config['wsjt_instances'], self.on_new_decode)
+            self.log_monitor = LogMonitor(
+                self.config['wsjt_instances'], self.on_new_decode,
+                contest_mode=self.config.get('contest_mode', 'vhf'),
+                priority_callback=self.on_priority_decode
+            )
+            self.log_monitor.priority_stations = self._parse_priority_stations(
+                self.config.get('dx_priority_stations', '') or self.config.get('psk_priority_stations', ''))
             self.log_monitor.start()
+
+            # Start priority alert aging timer (every 60 seconds)
+            self.root.after(60000, self._age_priority_alerts)
+
+            # Check LoTW auto-refresh (30s after startup)
+            self.root.after(30000, self._check_lotw_auto_refresh)
+
+            # Update settings UI status labels
+            if hasattr(self, 'lotw_status_var'):
+                self.lotw_status_var.set(self._get_lotw_status_text())
+            if hasattr(self, 'cty_status_var'):
+                self.cty_status_var.set(self._get_cty_status_text())
             
             # Start APRS if enabled
             if self.config.get('aprs_enabled', False):
@@ -4280,9 +4803,13 @@ class CoPilotApp:
     def _update_logger_button(self):
         """Update the logger button text based on contest mode"""
         logger = self.config.get('contest_logger', 'n1mm')
-        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
-        
-        if self.config.get('contest_mode') == 'qso_party':
+        logger_name = LOGGER_NAMES.get(logger, 'N1MM+')
+        mode = self.config.get('contest_mode', 'vhf')
+
+        # Daily DX mode — no ROVERQTH/grid push needed
+        if mode == 'daily_dx':
+            self.logger_button.config(text=f"{logger_name} (no grid push)", state='disabled')
+        elif mode == 'qso_party':
             # QSO Party mode - show county abbreviation
             if self.current_county:
                 self.logger_button.config(text=f"Send to {logger_name}: {self.current_county}", state='normal')
@@ -4626,6 +5153,14 @@ class CoPilotApp:
     
     def _start_aprs(self):
         """Start APRS-IS client"""
+        # Stop existing client first to prevent duplicate connections
+        if hasattr(self, 'aprs_client') and self.aprs_client:
+            import time
+            print("APRS: Stopping existing client before restart...")
+            self.aprs_client.stop()
+            self.aprs_client = None
+            time.sleep(1)  # Brief pause so server recognizes disconnect
+
         try:
             callsign = self.config.get('aprs_callsign', 'N5ZY')
             beacon_interval = self.config.get('aprs_beacon_interval', 600)
@@ -4723,6 +5258,8 @@ class CoPilotApp:
             self.config['grid_precision'] = 6
         elif mode_key == 'qso_party':
             self.config['grid_precision'] = 4  # Still use 4-char for WSJT-X
+        elif mode_key == 'daily_dx':
+            self.config['grid_precision'] = 4
         
         self.save_config()
         self._update_contest_mode_ui()
@@ -4780,28 +5317,34 @@ class CoPilotApp:
         self._update_logger_button()
         
         # Update Test Mode button
-        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
+        logger_name = LOGGER_NAMES.get(logger, 'N1MM+')
         if hasattr(self, 'test_send_button'):
             self.test_send_button.config(text=f"Send to WSJT-X + {logger_name}")
         if hasattr(self, 'test_hint_label'):
             self.test_hint_label.config(text=f"Sends grid to all WSJT-X instances and {logger_name}")
-        
+
         # Update Manual Entry labels
         self._update_manual_entry_labels()
-        
+
         self.add_alert(f"Contest logger: {logger_name}")
         print(f"Logger: Changed to {logger}")
     
     def _update_logger_ui(self):
         """Show/hide logger-specific settings"""
         logger = self.config.get('contest_logger', 'n1mm')
-        
+
         if logger == 'n1mm':
             self.n1mm_settings_frame.grid()
             self.n3fjp_settings_frame.grid_remove()
-        else:
+            self.log4om_settings_frame.grid_remove()
+        elif logger == 'n3fjp':
             self.n1mm_settings_frame.grid_remove()
             self.n3fjp_settings_frame.grid()
+            self.log4om_settings_frame.grid_remove()
+        elif logger == 'log4om':
+            self.n1mm_settings_frame.grid_remove()
+            self.n3fjp_settings_frame.grid_remove()
+            self.log4om_settings_frame.grid()
     
     def _update_manual_entry_labels(self):
         """Update Manual Entry tab labels based on contest mode and logger"""
@@ -4811,8 +5354,8 @@ class CoPilotApp:
         
         mode = self.config.get('contest_mode', 'vhf')
         logger = self.config.get('contest_logger', 'n1mm')
-        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
-        
+        logger_name = LOGGER_NAMES.get(logger, 'N1MM+')
+
         if mode == 'qso_party':
             # QSO Party mode - use exchange labels
             self.their_grid_label.config(text="Their Exchange:")
@@ -4823,7 +5366,7 @@ class CoPilotApp:
             if self.current_county:
                 self.manual_mygrid_var.set(self.current_county)
         else:
-            # VHF/222 Up mode - use grid labels
+            # VHF/222 Up/Daily DX mode - use grid labels
             self.their_grid_label.config(text="Their Grid:")
             self.my_grid_label.config(text="My Grid:")
             self.my_grid_hint_label.config(text="(auto-filled from GPS)")
@@ -4869,6 +5412,24 @@ class CoPilotApp:
             if band not in self.gc_cw_freqs:
                 self.gc_cw_freqs[band] = '144.100'
     
+    # Bands that are 6m (50 MHz) and above — VHF/UHF/Microwave
+    VHF_BANDS = {'6m', '2m', '1.25m', '70cm', '33cm', '23cm',
+                 '13cm', '9cm', '5cm', '3cm', '1.2cm', '6mm', '4mm', '2mm', '1mm'}
+
+    def _update_vhf_tab_states(self):
+        """Enable/disable Grid Corner and QSY Advisor tabs based on whether any VHF+ band is selected."""
+        my_bands = set(self.config.get('my_bands', []))
+        has_vhf = bool(my_bands & self.VHF_BANDS)
+
+        for tab_widget in (self.qsy_tab, self.grid_corner_tab):
+            try:
+                if has_vhf:
+                    self.notebook.tab(tab_widget, state='normal')
+                else:
+                    self.notebook.tab(tab_widget, state='disabled')
+            except Exception:
+                pass  # Tab not yet added to notebook
+
     def _browse_qsoparty_file(self):
         """Browse for QSOParty.sec file"""
         filepath = filedialog.askopenfilename(
@@ -5113,7 +5674,77 @@ class CoPilotApp:
             msg = f"{callsign} calling you on {band}"
             self.add_alert(msg, priority=True, callsign=callsign)
             self.voice.announce(f"{callsign} calling on {band}")
-    
+
+    def on_priority_decode(self, band, callsign, freq_mhz):
+        """Called when a priority station is decoded in ALL.TXT"""
+        if not self.config.get('psk_priority_enabled', False):
+            return
+
+        from datetime import datetime
+        time_str = datetime.now().strftime('%H:%M')
+
+        # Use PriorityEngine if available
+        priority_result = None
+        if hasattr(self, 'priority_engine') and self.priority_engine:
+            priority_result = self.priority_engine.check(callsign, band, '')
+
+        if priority_result:
+            msg = f"{priority_result.code} {callsign} decoded on {band}"
+            if priority_result.entity_name:
+                msg += f" ({priority_result.entity_name})"
+            self.add_alert(msg, priority=True, callsign=callsign)
+            self._priority_voice_alert(callsign, band, voice_msg=priority_result.voice_msg)
+
+            # Insert into Priority pane
+            # For ALL.TXT decodes: Nearby=our call, QSO Dist/Prop=blank
+            my_dist_str = ''
+            my_dir_str = ''
+            if hasattr(self, 'cty_lookup') and self.cty_lookup and self.cty_lookup._loaded:
+                if hasattr(self, 'current_lat') and self.current_lat:
+                    bd = self.cty_lookup.get_bearing_distance(
+                        self.current_lat, self.current_lon, callsign)
+                    if bd:
+                        my_dist_str = str(int(bd[1]))
+                        my_dir_str = self.cty_lookup.bearing_to_compass(bd[0])
+
+            spot_data = {
+                'band': band,
+                'nearby_call': self.config.get('aprs_callsign', 'N5ZY'),
+                'far_call': callsign,
+                'qso_distance': '',
+                'my_distance': my_dist_str,
+                'bearing': my_dir_str,
+                'mode': '',
+            }
+            self._insert_priority_spot(time_str, priority_result.code, priority_result.tag,
+                                       spot_data, '')
+        else:
+            # Fallback: legacy DX! behavior
+            msg = f"DX! {callsign} decoded on {band}"
+            self.add_alert(msg, priority=True, callsign=callsign)
+            self._priority_voice_alert(callsign, band)
+
+    def _priority_voice_alert(self, callsign, band, voice_msg=None):
+        """Fire voice alert for priority station if not recently voiced (shared across sources)"""
+        import time as _time
+        key = (callsign.upper(), band)
+        now = _time.time()
+        if not hasattr(self, '_priority_voice_times'):
+            self._priority_voice_times = {}
+        if key in self._priority_voice_times and now - self._priority_voice_times[key] < 120:
+            return  # Already voiced within 2 minutes
+        self._priority_voice_times[key] = now
+        if voice_msg:
+            self.voice.announce(voice_msg)
+        else:
+            self.voice.announce(f"D X Priority {callsign} on {band}")
+
+    def _parse_priority_stations(self, stations_str):
+        """Parse comma-separated callsign list into a set of uppercase callsigns"""
+        if not stations_str:
+            return set()
+        return {s.strip().upper() for s in stations_str.split(',') if s.strip()}
+
     def ignore_station(self, callsign, duration_minutes=None):
         """Add a station to the ignore list"""
         import time
@@ -5175,10 +5806,10 @@ class CoPilotApp:
             messagebox.showwarning("No GPS", "No GPS position available yet")
     
     def send_grid_to_logger(self):
-        """Send current grid/county to the configured contest logger (N1MM+ or N3FJP)"""
+        """Send current grid/county to the configured contest logger"""
         mode = self.config.get('contest_mode', 'vhf')
         logger = self.config.get('contest_logger', 'n1mm')
-        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
+        logger_name = LOGGER_NAMES.get(logger, 'N1MM+')
         
         # In QSO Party mode with N1MM+, send county instead of grid
         if mode == 'qso_party' and logger == 'n1mm':
@@ -5374,7 +6005,9 @@ class CoPilotApp:
         self.config['contest_logger'] = self.logger_var.get()
         self.config['n1mm_udp_port'] = int(self.n1mm_port_var.get())
         self.config['n3fjp_port'] = int(self.n3fjp_port_var.get())
-        
+        self.config['log4om_host'] = self.log4om_host_var.get().strip()
+        self.config['log4om_port'] = int(self.log4om_port_var.get())
+
         # My Bands
         my_bands = [band for band, var in self.band_check_vars.items() if var.get()]
         self.config['my_bands'] = my_bands
@@ -5396,7 +6029,18 @@ class CoPilotApp:
         self.config['psk_alert_spe'] = self.psk_alert_spe_var.get()
         self.config['psk_alert_modes'] = self.psk_alert_modes_var.get()
         self.config['psk_crossref_qsy'] = self.psk_crossref_var.get()
-        
+        self.config['psk_priority_enabled'] = self.psk_priority_enabled_var.get()
+        self.config['dx_priority_stations'] = self.dx_priority_stations_var.get().strip()
+        self.config['ap_priority_stations'] = self.ap_priority_stations_var.get().strip()
+        self.config['dx2_enabled'] = self.dx2_enabled_var.get()
+        self.config['dx3_enabled'] = self.dx3_enabled_var.get()
+        self.config['dx3_granularity'] = self.dx3_granularity_var.get()
+        self.config['lotw_username'] = self.lotw_username_var.get().strip()
+        self.config['lotw_password'] = self.lotw_password_var.get().strip()
+        self.config['lotw_auto_refresh'] = self.lotw_auto_refresh_var.get()
+        # Keep legacy key in sync for backward compat
+        self.config['psk_priority_stations'] = self.config['dx_priority_stations']
+
         # Slack settings
         self.config['slack_enabled'] = self.slack_enabled_var.get()
         slack_webhooks = []
@@ -5432,6 +6076,13 @@ class CoPilotApp:
         
         # Update Grid Corner available bands
         self._update_grid_corner_bands()
+
+        # Enable/disable VHF-only tabs based on My Bands
+        self._update_vhf_tab_states()
+
+        # Rebuild PSK Band Activity panel to reflect My Bands
+        if hasattr(self, 'psk_band_rows_frame'):
+            self._rebuild_band_activity_labels()
         
         self.save_config()
         messagebox.showinfo("Settings", "Settings saved successfully")
@@ -5448,6 +6099,8 @@ class CoPilotApp:
             n1mm_port=self.config.get('n1mm_udp_port', 52001),
             n3fjp_host=self.config.get('n3fjp_host', '127.0.0.1'),
             n3fjp_port=self.config.get('n3fjp_port', 1100),
+            log4om_host=self.config.get('log4om_host', '127.0.0.1'),
+            log4om_port=self.config.get('log4om_port', 2333),
             contest_logger=self.config.get('contest_logger', 'n1mm'),
             qso_callback=self.on_qso_logged,
             location_stamper=self._stamp_qso_location
@@ -5472,7 +6125,27 @@ class CoPilotApp:
             self.psk_monitor.alert_spe = self.config['psk_alert_spe']
             self.psk_monitor.alert_unusual_modes = self.config['psk_alert_modes']
             self.psk_monitor.alert_crossref_qsy = self.config['psk_crossref_qsy']
-        
+            self.psk_monitor.priority_enabled = self.config['psk_priority_enabled']
+            self.psk_monitor.priority_stations = self._parse_priority_stations(
+                self.config.get('dx_priority_stations', ''))
+
+        # Sync priority stations to log_monitor
+        if hasattr(self, 'log_monitor') and self.log_monitor:
+            self.log_monitor.priority_stations = self._parse_priority_stations(
+                self.config.get('dx_priority_stations', ''))
+            self.log_monitor.contest_mode = self.config.get('contest_mode', 'vhf')
+            self.log_monitor.priority_enabled = self.config.get('psk_priority_enabled', False)
+
+        # Sync PriorityEngine
+        if hasattr(self, 'priority_engine') and self.priority_engine:
+            self.priority_engine.configure(self.config,
+                                           getattr(self, 'cty_lookup', None),
+                                           getattr(self, 'lotw_client', None))
+
+        # Update priority pane visibility
+        if hasattr(self, '_update_priority_pane_visibility'):
+            self._update_priority_pane_visibility()
+
         # Start/stop PSK monitor based on settings
         if self.config['psk_enabled'] and (self.psk_monitor is None or not self.psk_monitor.running):
             self._start_psk_monitor()
@@ -5604,7 +6277,7 @@ class CoPilotApp:
         
         # Update logger button (main window)
         logger = self.config.get('contest_logger', 'n1mm')
-        logger_name = "N1MM+" if logger == 'n1mm' else "N3FJP"
+        logger_name = LOGGER_NAMES.get(logger, 'N1MM+')
         self.logger_button.config(text=f"Send to {logger_name}: {test_grid}", state='normal')
         
         # Send to WSJT-X AND logger

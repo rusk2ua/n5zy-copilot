@@ -10,22 +10,27 @@ import re
 from pathlib import Path
 
 class LogMonitor:
-    def __init__(self, wsjt_instances, callback):
+    def __init__(self, wsjt_instances, callback, contest_mode='vhf', priority_callback=None):
         """
         Initialize log monitor
-        
+
         Args:
             wsjt_instances: List of WSJT-X instance configs with log paths
             callback: Function to call with (band, callsign, grid, is_new_grid, is_calling_me)
+            contest_mode: Contest mode ('vhf', 'daily_dx', etc.)
+            priority_callback: Function to call with (band, callsign, freq_mhz) for priority stations
         """
         self.wsjt_instances = wsjt_instances
         self.callback = callback
+        self.contest_mode = contest_mode
+        self.priority_callback = priority_callback
+        self.priority_stations = set()  # Set externally
         self.running = False
         self.thread = None
-        
+
         # Track worked grids per band
         self.worked_grids = {}  # {band: set(grids)}
-        
+
         # Track last file positions
         self.file_positions = {}  # {filepath: position}
     
@@ -212,12 +217,23 @@ class LogMonitor:
             
             if not message:
                 return
-            
+
             # Skip if this is OUR OWN message (we're calling CQ or responding)
             # Check if first callsign in message is N5ZY
             if message.upper().startswith('CQ N5ZY') or message.upper().startswith('N5ZY '):
                 return
-            
+
+            # Check for priority station decode (fires for any decode, even without grid)
+            if self.priority_stations and self.priority_callback:
+                call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[A-Z][A-Z0-9]*[0-9][A-Z]+)\b'
+                msg_calls = re.findall(call_pattern, message, re.IGNORECASE)
+                for c in msg_calls:
+                    c_upper = c.upper()
+                    if c_upper != 'N5ZY' and c_upper != 'CQ' and c_upper in self.priority_stations:
+                        band_display = self._freq_to_band(actual_freq_mhz) if actual_freq_mhz else self._extract_band_freq(band_name)
+                        self.priority_callback(band_display, c_upper, actual_freq_mhz)
+                        break  # One priority alert per decode line
+
             # Extract grid square (4 characters: 2 letters + 2 digits)
             grid_match = re.search(r'\b([A-R]{2}\d{2})\b', message, re.IGNORECASE)
             if not grid_match:
@@ -267,8 +283,8 @@ class LogMonitor:
             if is_new_grid or is_calling_me:
                 # Use actual frequency from line if available, otherwise fall back to band name
                 if actual_freq_mhz:
-                    # Skip HF (below 50 MHz) - this is a VHF contest copilot
-                    if actual_freq_mhz < 50:
+                    # Skip HF (below 50 MHz) unless in Daily DX mode
+                    if actual_freq_mhz < 50 and self.contest_mode != 'daily_dx':
                         return
                     band_display = self._freq_to_band(actual_freq_mhz)
                 else:
@@ -281,7 +297,29 @@ class LogMonitor:
     
     def _freq_to_band(self, freq_mhz):
         """Convert frequency in MHz to band name for display"""
-        if 50 <= freq_mhz <= 54:
+        # HF bands
+        if 1.8 <= freq_mhz <= 2.0:
+            return "160m"
+        elif 3.5 <= freq_mhz <= 4.0:
+            return "80m"
+        elif 5.3 <= freq_mhz <= 5.4:
+            return "60m"
+        elif 7.0 <= freq_mhz <= 7.3:
+            return "40m"
+        elif 10.1 <= freq_mhz <= 10.15:
+            return "30m"
+        elif 14.0 <= freq_mhz <= 14.35:
+            return "20m"
+        elif 18.068 <= freq_mhz <= 18.168:
+            return "17m"
+        elif 21.0 <= freq_mhz <= 21.45:
+            return "15m"
+        elif 24.89 <= freq_mhz <= 24.99:
+            return "12m"
+        elif 28 <= freq_mhz <= 30:
+            return "10m"
+        # VHF+ bands
+        elif 50 <= freq_mhz <= 54:
             return "6m"
         elif 144 <= freq_mhz <= 148:
             return "2m"
@@ -301,8 +339,6 @@ class LogMonitor:
             return "5cm"
         elif 10000 <= freq_mhz <= 10500:
             return "3cm"
-        elif 28 <= freq_mhz <= 30:
-            return "10m"  # HF, not VHF but might show up
         else:
             return f"{freq_mhz:.1f}MHz"
     

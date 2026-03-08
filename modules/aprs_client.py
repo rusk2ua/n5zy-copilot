@@ -214,40 +214,64 @@ class APRSClient:
     
     def _receive_loop(self):
         """Main receive loop - runs in thread"""
+        reconnect_delay = 5  # Start with 5 second delay
         while self.running:
             try:
                 if not self.connected:
                     if not self._connect():
                         time.sleep(30)  # Wait before retry
                         continue
-                
+                    reconnect_delay = 5  # Reset backoff on successful connect
+
                 # Set timeout for recv
                 self.socket.settimeout(60)
-                
+
                 # Receive data
                 data = self.socket.recv(1024)
                 if not data:
-                    print("APRS: Connection closed by server")
+                    print(f"APRS: Connection closed by server, reconnecting in {reconnect_delay}s...")
                     self.connected = False
+                    # Close socket cleanly
+                    try:
+                        self.socket.close()
+                    except:
+                        pass
+                    self.socket = None
+                    # Wait before reconnecting (exponential backoff)
+                    time.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, 120)  # Max 2 minutes
                     continue
-                
+
+                # Got data successfully — reset backoff
+                reconnect_delay = 5
+
                 # Process each line
                 lines = data.decode('utf-8', errors='ignore').split('\r\n')
                 for line in lines:
                     if line and not line.startswith('#'):
                         self._process_packet(line)
                         self.packets_received += 1
-                
+
             except socket.timeout:
                 # Send keepalive
                 try:
                     self.socket.send(b"#keepalive\r\n")
                 except:
                     self.connected = False
-            except Exception as e:
+            except OSError as e:
+                if not self.running:
+                    break  # Clean shutdown — socket closed by stop()
                 print(f"APRS: Receive error: {e}")
                 self.connected = False
-                time.sleep(5)
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 120)
+            except Exception as e:
+                if not self.running:
+                    break
+                print(f"APRS: Receive error: {e}")
+                self.connected = False
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 120)
     
     def _process_packet(self, packet):
         """Process an APRS packet"""

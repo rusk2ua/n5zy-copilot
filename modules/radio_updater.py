@@ -32,19 +32,23 @@ class RadioUpdater:
     MSG_LOGGED_ADIF = 12
     MSG_HIGHLIGHT_CALLSIGN = 13
     
-    def __init__(self, wsjt_instances, n1mm_host='127.0.0.1', n1mm_port=52001, 
-                 n3fjp_host='127.0.0.1', n3fjp_port=1100, contest_logger='n1mm',
+    def __init__(self, wsjt_instances, n1mm_host='127.0.0.1', n1mm_port=52001,
+                 n3fjp_host='127.0.0.1', n3fjp_port=1100,
+                 log4om_host='127.0.0.1', log4om_port=2333,
+                 contest_logger='n1mm',
                  qso_callback=None, location_stamper=None):
         """
         Initialize radio updater
-        
+
         Args:
             wsjt_instances: List of WSJT-X instance configs
             n1mm_host: N1MM+ TCP host
             n1mm_port: N1MM+ JTDX TCP port (default 52001)
             n3fjp_host: N3FJP API host
             n3fjp_port: N3FJP API TCP port (default 1100)
-            contest_logger: 'n1mm' or 'n3fjp'
+            log4om_host: Log4OM v2 UDP host (default 127.0.0.1)
+            log4om_port: Log4OM v2 UDP port (default 2333)
+            contest_logger: 'n1mm', 'n3fjp', or 'log4om'
             qso_callback: Function to call when QSO is logged (qso_data dict)
             location_stamper: Function to stamp QSO with GPS location data (my_state, my_cnty, etc.)
         """
@@ -53,6 +57,8 @@ class RadioUpdater:
         self.n1mm_port = n1mm_port
         self.n3fjp_host = n3fjp_host
         self.n3fjp_port = n3fjp_port
+        self.log4om_host = log4om_host
+        self.log4om_port = log4om_port
         self.contest_logger = contest_logger
         self.qso_callback = qso_callback
         self.location_stamper = location_stamper
@@ -103,7 +109,8 @@ class RadioUpdater:
         """Start the QSO relay thread"""
         self.relay_thread = threading.Thread(target=self._relay_loop, daemon=True)
         self.relay_thread.start()
-        logger_name = "N3FJP" if self.contest_logger == 'n3fjp' else "N1MM+"
+        logger_names = {'n3fjp': 'N3FJP', 'log4om': 'Log4OM', 'n1mm': 'N1MM+'}
+        logger_name = logger_names.get(self.contest_logger, 'N1MM+')
         print(f"Radio Update: Started {logger_name} QSO relay thread")
     
     def _relay_loop(self):
@@ -131,6 +138,8 @@ class RadioUpdater:
                 # Send to appropriate logger based on configuration
                 if self.contest_logger == 'n3fjp':
                     success = self._send_qso_to_n3fjp(qso_data)
+                elif self.contest_logger == 'log4om':
+                    success = self._send_qso_to_log4om(qso_data)
                 else:
                     success = self._send_qso_to_n1mm(qso_data)
                 
@@ -591,10 +600,28 @@ class RadioUpdater:
     # ==================== N3FJP Methods ====================
     
     def set_logger(self, logger):
-        """Change the contest logger ('n1mm' or 'n3fjp')"""
+        """Change the contest logger ('n1mm', 'n3fjp', or 'log4om')"""
         self.contest_logger = logger
-        print(f"RadioUpdater: Contest logger set to {logger}")
-    
+        print(f"RadioUpdater: Logger set to {logger}")
+
+    # ==================== Log4OM v2 Methods ====================
+
+    def _send_qso_to_log4om(self, qso_data):
+        """Send QSO to Log4OM v2 via UDP ADIF record"""
+        try:
+            adif_record = self._build_adif_record(qso_data)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.sendto(adif_record.encode('utf-8'),
+                       (self.log4om_host, self.log4om_port))
+            sock.close()
+            print(f"  Log4OM: Sent ADIF record to {self.log4om_host}:{self.log4om_port}")
+            return True
+        except Exception as e:
+            print(f"  Log4OM: Error sending QSO: {e}")
+            return False
+
+    # ==================== N3FJP Methods ====================
+
     def _send_n3fjp_command(self, command):
         """
         Send a command to N3FJP via TCP

@@ -132,9 +132,16 @@ class GPSMonitor:
                             if line.startswith('$GPGGA') or line.startswith('$GNGGA'):
                                 msg = pynmea2.parse(line)
                                 
+                                # Always update satellite count (even before lock)
+                                if hasattr(msg, 'num_sats'):
+                                    try:
+                                        self.satellites = int(msg.num_sats) if msg.num_sats else 0
+                                    except:
+                                        self.satellites = 0
+
                                 # Check fix quality (0=no fix, 1=GPS fix, 2=DGPS fix, etc.)
                                 has_fix = msg.latitude and msg.longitude and hasattr(msg, 'gps_qual') and msg.gps_qual > 0
-                                
+
                                 if has_fix:
                                     if not had_fix:
                                         # Just got a fix
@@ -150,13 +157,7 @@ class GPSMonitor:
                                     if hasattr(msg, 'altitude') and msg.altitude is not None:
                                         self.altitude_m = float(msg.altitude)
                                         self.altitude_ft = self.altitude_m * 3.28084
-                                    
-                                    if hasattr(msg, 'num_sats'):
-                                        try:
-                                            self.satellites = int(msg.num_sats) if msg.num_sats else 0
-                                        except:
-                                            self.satellites = 0
-                                    
+
                                     if hasattr(msg, 'horizontal_dil') and msg.horizontal_dil:
                                         try:
                                             self.hdop = float(msg.horizontal_dil)
@@ -249,9 +250,17 @@ class GPSMonitor:
         return None
     
     def get_full_data(self):
-        """Get all GPS data for GPS Logger tab display"""
+        """Get all GPS data for GPS Logger tab display.
+        Returns partial data (satellites, has_fix=False) when no lock yet."""
         if self.current_lat is None or self.current_lon is None:
-            return None
+            # No fix yet, but return satellite count so UI can show progress
+            return {
+                'has_fix': False,
+                'satellites': self.satellites,
+                'lat': None,
+                'lon': None,
+                'grid_6char': None,
+            }
         
         # Calculate average speed if we have track data
         avg_speed = None
@@ -262,6 +271,7 @@ class GPSMonitor:
                 avg_speed = self.track_distance_mi / elapsed
         
         return {
+            'has_fix': True,
             'lat': self.current_lat,
             'lon': self.current_lon,
             'grid_6char': getattr(self, 'grid_6char', self.current_grid),
