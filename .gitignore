@@ -32,6 +32,7 @@ logs/*.csv
 logs/*.log
 logs/*.xml
 data/master.dta
+data/lotw_credits.adi
 
 # Claude Code
 .claude/
