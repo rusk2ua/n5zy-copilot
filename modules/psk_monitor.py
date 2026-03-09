@@ -771,7 +771,7 @@ class PSKMonitor:
         
         # Voice announcement
         if voice_msg and self.voice:
-            self.voice.announce(voice_msg)
+            self.voice.announce(voice_msg, category="psk_alert")
     
     def _is_alert_recent(self, alert_key):
         """Check if alert was sent recently (within cooldown)"""

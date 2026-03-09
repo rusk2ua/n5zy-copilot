@@ -8,6 +8,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import json
 import os
+import time
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -65,6 +67,7 @@ class CoPilotApp:
         self.aprs_client = None
         self.psk_monitor = None
         self.voice = VoiceAlerter()
+        self.voice.load_settings(self.config)
         self.qsy_advisor = QSYAdvisor()
         self.qsy_advisor.set_qsy_callback(self.on_qsy_opportunity)
         self.grid_boundary = GridBoundaryMonitor(self.on_boundary_announcement)
@@ -100,6 +103,13 @@ class CoPilotApp:
         # Ignore list for "calling me" alerts: {callsign: expire_timestamp}
         self.ignored_stations = {}
         self.ignore_duration_minutes = 30
+
+        # GPS Time Sync state
+        self._time_sync_timer_id = None        # root.after() ID for scheduled sync
+        self._time_sync_last_sync = None       # datetime of last successful sync
+        self._time_sync_last_offset_ms = None  # offset at last sync
+        self._time_sync_log_path = Path("logs/gps_time_sync.log")
+        self._intermittent_port_closed = False  # True when port is deliberately closed
         
         # Shared PSK enabled variable (used by both Settings and PSK Monitor tabs)
         self.psk_enabled_var = tk.BooleanVar(value=self.config.get('psk_enabled', False))
@@ -122,6 +132,12 @@ class CoPilotApp:
             # Default configuration
             self.config = {
                 'gps_port': 'COM3',
+                'gps_baudrate': None,         # None = auto-detect, or 4800/9600/19200/38400
+                'gps_update_rate_hz': 1,      # NMEA update rate (1, 2, 5, 10 Hz)
+                'gps_time_sync_enabled': False,
+                'gps_time_sync_interval_minutes': 5,
+                'gps_time_sync_intermittent': False,
+                'gps_time_sync_update_grid': True,
                 'victron_address': '',
                 'victron_key': '',
                 'grid_precision': 4,  # 4-char for VHF contests, 6-char for 222 and Up
@@ -165,6 +181,9 @@ class CoPilotApp:
                 'cty_last_update': '',        # ISO date
                 # Grid boundary alerts
                 'grid_boundary_alerts': False,  # Voice alerts when approaching grid edges
+                # Voice alert controls
+                'voice_enabled': True,
+                'voice_disabled_categories': [],
                 # QRZ lookup (fallback when SCP has no matches)
                 'qrz_username': '',
                 'qrz_password': '',
@@ -714,19 +733,167 @@ class CoPilotApp:
         
         # Initial population of COM ports
         self._refresh_com_ports()
-        
+
+        # Baud rate selection
+        ttk.Label(gps_frame, text="Baud Rate:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        baud_config = self.config.get('gps_baudrate', None)
+        self.gps_baudrate_var = tk.StringVar(
+            value='Auto' if baud_config is None else str(baud_config))
+        baud_values = ['Auto', '4800', '9600', '19200', '38400', '57600', '115200']
+        self.gps_baud_combo = ttk.Combobox(gps_frame, textvariable=self.gps_baudrate_var,
+                                            values=baud_values, width=12, state='readonly')
+        self.gps_baud_combo.grid(row=1, column=1, pady=2, padx=5)
+        self.gps_baud_combo.bind('<<ComboboxSelected>>', self._on_gps_baud_changed)
+
+        ttk.Button(gps_frame, text="Auto-Detect",
+                   command=self._auto_detect_gps_baud).grid(row=1, column=2, pady=2, padx=2)
+
+        self.gps_baud_status_var = tk.StringVar(value="")
+        ttk.Label(gps_frame, textvariable=self.gps_baud_status_var,
+                  foreground="gray").grid(row=1, column=3, sticky=tk.W, padx=5)
+
+        # Update rate selection
+        ttk.Label(gps_frame, text="Update Rate:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.gps_update_rate_var = tk.StringVar(
+            value=str(self.config.get('gps_update_rate_hz', 1)))
+        rate_values = ['1', '2', '5', '10']
+        self.gps_rate_combo = ttk.Combobox(gps_frame, textvariable=self.gps_update_rate_var,
+                                            values=rate_values, width=6, state='readonly')
+        self.gps_rate_combo.grid(row=2, column=1, pady=2, padx=5, sticky=tk.W)
+        self.gps_rate_combo.bind('<<ComboboxSelected>>', self._on_gps_rate_changed)
+
+        ttk.Label(gps_frame, text="Hz  (requires 19200+ baud for >1Hz)",
+                  foreground="gray").grid(row=2, column=2, columnspan=2, sticky=tk.W, padx=5)
+
+        # Enable/disable rate combo based on current baud
+        self._update_rate_combo_state()
+
         # Grid boundary alerts toggle
         self.grid_boundary_var = tk.BooleanVar(value=self.config.get('grid_boundary_alerts', False))
-        ttk.Checkbutton(gps_frame, text="Grid Boundary Alerts", 
-                       variable=self.grid_boundary_var,
-                       command=self.toggle_grid_boundary_alerts).grid(row=1, column=0, sticky=tk.W, pady=2)
-        ttk.Label(gps_frame, text="Voice alerts at 5mi, 2mi, 1mi, 100yd, 50yd when approaching boundary", 
-                 foreground="gray").grid(row=1, column=1, columnspan=3, sticky=tk.W, padx=5)
+        ttk.Checkbutton(gps_frame, text="Grid Boundary Alerts",
+                        variable=self.grid_boundary_var,
+                        command=self.toggle_grid_boundary_alerts).grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Label(gps_frame, text="Voice alerts at 5mi, 2mi, 1mi, 100yd, 50yd when approaching boundary",
+                  foreground="gray").grid(row=3, column=1, columnspan=3, sticky=tk.W, padx=5)
         
+        # GPS Time Sync Settings
+        timesync_frame = ttk.LabelFrame(frame, text="GPS Time Sync", padding=10)
+        timesync_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        # Row 0: Enable + Interval
+        self.gps_time_sync_var = tk.BooleanVar(value=self.config.get('gps_time_sync_enabled', False))
+        ttk.Checkbutton(timesync_frame, text="Enable GPS Time Sync",
+                        variable=self.gps_time_sync_var,
+                        command=self._on_time_sync_toggle).grid(row=0, column=0, sticky=tk.W, pady=2)
+
+        ttk.Label(timesync_frame, text="Interval:").grid(row=0, column=1, sticky=tk.E, padx=(20, 5), pady=2)
+        _interval_cfg = self.config.get('gps_time_sync_interval_minutes', 5)
+        self.gps_sync_interval_var = tk.StringVar(
+            value='Manual' if _interval_cfg == 0 else str(_interval_cfg))
+        interval_values = ['1', '5', '10', '15', 'Manual']
+        self.gps_sync_interval_combo = ttk.Combobox(
+            timesync_frame, textvariable=self.gps_sync_interval_var,
+            values=interval_values, width=8, state='readonly')
+        self.gps_sync_interval_combo.grid(row=0, column=2, pady=2, padx=2, sticky=tk.W)
+        self.gps_sync_interval_combo.bind('<<ComboboxSelected>>', self._on_sync_interval_changed)
+        ttk.Label(timesync_frame, text="min", foreground="gray").grid(row=0, column=3, sticky=tk.W, pady=2)
+
+        # Row 1: Intermittent mode + WSJT-X grid update
+        self.gps_intermittent_var = tk.BooleanVar(value=self.config.get('gps_time_sync_intermittent', False))
+        self.gps_intermittent_cb = ttk.Checkbutton(
+            timesync_frame, text="Intermittent Mode",
+            variable=self.gps_intermittent_var,
+            command=self._on_intermittent_toggle)
+        self.gps_intermittent_cb.grid(row=1, column=0, sticky=tk.W, pady=2)
+
+        self.gps_intermittent_hint = ttk.Label(
+            timesync_frame, text="(close GPS between syncs to reduce RF noise)",
+            foreground="gray")
+        self.gps_intermittent_hint.grid(row=1, column=1, columnspan=3, sticky=tk.W, padx=5, pady=2)
+
+        self.gps_sync_grid_var = tk.BooleanVar(value=self.config.get('gps_time_sync_update_grid', True))
+        ttk.Checkbutton(timesync_frame, text="Update WSJT-X Grid Square after sync",
+                        variable=self.gps_sync_grid_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=2)
+
+        # Row 3: Sync Now + Status
+        ttk.Button(timesync_frame, text="Sync Now",
+                   command=self._time_sync_now).grid(row=3, column=0, sticky=tk.W, pady=2)
+
+        self.gps_sync_status_var = tk.StringVar(value="Not synced")
+        ttk.Label(timesync_frame, textvariable=self.gps_sync_status_var,
+                  foreground="gray").grid(row=3, column=1, columnspan=3, sticky=tk.W, padx=10, pady=2)
+
+        # Row 4: Admin warning (hidden by default)
+        self.gps_admin_warning_var = tk.StringVar(value="")
+        self.gps_admin_warning_label = ttk.Label(
+            timesync_frame, textvariable=self.gps_admin_warning_var,
+            foreground="red", wraplength=500)
+        self.gps_admin_warning_label.grid(row=4, column=0, columnspan=4, sticky=tk.W, pady=2)
+
+        # Check admin status and update intermittent availability
+        self._check_time_sync_admin()
+        self._update_intermittent_state()
+
+        # Voice Alerts Settings
+        voice_frame = ttk.LabelFrame(frame, text="Voice Alerts", padding=10)
+        voice_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        # Master switch
+        self.voice_enabled_var = tk.BooleanVar(value=self.config.get('voice_enabled', True))
+        ttk.Checkbutton(voice_frame, text="Enable Voice Alerts (Master)",
+                        variable=self.voice_enabled_var,
+                        command=self._on_voice_master_toggle).grid(
+            row=0, column=0, sticky=tk.W, pady=2)
+        ttk.Label(voice_frame, text="Master switch for all text-to-speech announcements",
+                  foreground="gray").grid(row=0, column=1, sticky=tk.W, padx=10)
+
+        # Individual category toggles
+        ttk.Label(voice_frame, text="Individual Categories:",
+                  font=('TkDefaultFont', 9, 'bold')).grid(
+            row=1, column=0, columnspan=2, sticky=tk.W, pady=(8, 2))
+
+        VOICE_CATEGORIES = [
+            ("qso_logged",    "QSO Logged",            '"QSO logged. W1AW"'),
+            ("grid_change",   "Grid Change",            "Grid enter/initial announcements"),
+            ("county_change", "County Change",          "QSO Party county changes"),
+            ("grid_boundary", "Grid Boundary",          "Proximity alerts (5mi, 2mi, 1mi...)"),
+            ("new_decode",    "New Grid / Calling Me",  "WSJT-X decode alerts"),
+            ("priority_dx",   "Priority DX Station",    "DX!/AP! priority station alerts"),
+            ("psk_alert",     "PSK Band Activity",      "PSK Reporter band opening alerts"),
+            ("aprs_message",  "APRS Messages",          "Incoming APRS messages"),
+            ("aprs_nearby",   "APRS Nearby Station",    "Nearby station position alerts"),
+            ("gps_waypoint",  "GPS Waypoint",           "Waypoint added confirmations"),
+            ("warnings",      "Warnings",               "GPS lock, battery, WSJT-X watchdog"),
+            ("operational",   "Operational Status",     "Log reload, logger updates, baud changes"),
+        ]
+
+        disabled_cats = set(self.config.get('voice_disabled_categories', []))
+        self.voice_category_vars = {}
+        self.voice_category_cbs = {}
+
+        for i, (key, label, hint) in enumerate(VOICE_CATEGORIES):
+            var = tk.BooleanVar(value=(key not in disabled_cats))
+            self.voice_category_vars[key] = var
+            cb = ttk.Checkbutton(voice_frame, text=label, variable=var,
+                                 command=self._on_voice_category_change)
+            cb.grid(row=i + 2, column=0, sticky=tk.W, padx=(20, 0), pady=1)
+            self.voice_category_cbs[key] = cb
+            ttk.Label(voice_frame, text=hint, foreground="gray").grid(
+                row=i + 2, column=1, sticky=tk.W, padx=10, pady=1)
+
+        ttk.Label(voice_frame,
+                  text="Test Voice button always works regardless of these settings",
+                  foreground="gray", font=('TkDefaultFont', 8)).grid(
+            row=len(VOICE_CATEGORIES) + 2, column=0, columnspan=2,
+            sticky=tk.W, pady=(5, 0), padx=5)
+
+        # Grey out categories if master is off
+        self._update_voice_category_states()
+
         # Victron Settings
         victron_frame = ttk.LabelFrame(frame, text="Victron SmartShunt", padding=10)
         victron_frame.pack(fill=tk.X, padx=5, pady=5)
-        
+
         ttk.Label(victron_frame, text="BLE Address:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self.victron_addr_var = tk.StringVar(value=self.config['victron_address'])
         ttk.Entry(victron_frame, textvariable=self.victron_addr_var, width=40).grid(row=0, column=1, pady=2)
@@ -1809,7 +1976,7 @@ class CoPilotApp:
             
             # Voice announcement
             if self.voice:
-                self.voice.announce(f"QSO logged. {qso_data['dx_call']}")
+                self.voice.announce(f"QSO logged. {qso_data['dx_call']}", category="qso_logged")
             
             # Check for QSY opportunities (other bands this station operates)
             if self.qsy_advisor:
@@ -1873,13 +2040,14 @@ class CoPilotApp:
         # ── Priority Alerts pane (top) — pinned, time-aged ──
         self.psk_priority_frame = ttk.LabelFrame(self.psk_paned, text="Priority Alerts", padding=5)
 
-        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
+        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
 
         self.psk_priority_tree = ttk.Treeview(self.psk_priority_frame, columns=alert_columns,
                                                show='headings', height=5)
         for col, heading, width in [
             ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
-            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('qso_dist', 'QSO Dist', 55),
+            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('entity', 'Entity', 95),
+            ('qso_dist', 'QSO Dist', 55),
             ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
         ]:
             self.psk_priority_tree.heading(col, text=heading)
@@ -1906,7 +2074,8 @@ class CoPilotApp:
 
         for col, heading, width in [
             ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
-            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('qso_dist', 'QSO Dist', 55),
+            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('entity', 'Entity', 95),
+            ('qso_dist', 'QSO Dist', 55),
             ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
         ]:
             self.psk_alert_tree.heading(col, text=heading,
@@ -2030,6 +2199,18 @@ class CoPilotApp:
         self.psk_status_var.set("Status: Stopped")
         self.add_alert("PSK Monitor: Stopped")
     
+    def _resolve_entity(self, callsign):
+        """Resolve callsign to DXCC entity name via cty.dat, truncated to 15 chars"""
+        try:
+            if not callsign or not hasattr(self, 'cty_lookup') or not self.cty_lookup:
+                return ''
+            entity = self.cty_lookup.lookup(callsign)
+            if entity and entity.name:
+                return entity.name[:15]
+        except Exception:
+            pass
+        return ''
+
     def _on_psk_spot(self, spot_data):
         """Handle individual PSK spot — route to Priority or Propagation pane"""
         try:
@@ -2111,6 +2292,7 @@ class CoPilotApp:
                 time_str, pri_text, band,
                 spot_data.get('nearby_call', ''),
                 spot_data.get('far_call', ''),
+                self._resolve_entity(spot_data.get('far_call', '')),
                 spot_data.get('qso_distance', ''),
                 spot_data.get('my_distance', ''),
                 spot_data.get('bearing', ''),
@@ -2137,6 +2319,7 @@ class CoPilotApp:
             time_str, pri_text, spot_data.get('band', ''),
             spot_data.get('nearby_call', ''),
             spot_data.get('far_call', ''),
+            self._resolve_entity(spot_data.get('far_call', '')),
             spot_data.get('qso_distance', ''),
             spot_data.get('my_distance', ''),
             spot_data.get('bearing', ''),
@@ -2251,11 +2434,11 @@ class CoPilotApp:
             self.psk_alert_tree.move(k, '', index)
 
         # Update heading indicators
-        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
+        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
         heading_names = {
             'time': 'Time', 'pri': 'P', 'band': 'Band', 'nearby': 'Nearby',
-            'far': 'Far (Try!)', 'qso_dist': 'QSO Dist', 'my_dist': 'My Dist',
-            'my_dir': 'My Dir', 'prop': 'Prop', 'mode': 'Mode',
+            'far': 'Far (Try!)', 'entity': 'Entity', 'qso_dist': 'QSO Dist',
+            'my_dist': 'My Dist', 'my_dir': 'My Dir', 'prop': 'Prop', 'mode': 'Mode',
         }
         for c in alert_columns:
             indicator = ''
@@ -3348,7 +3531,7 @@ class CoPilotApp:
         
         # Voice confirmation
         if hasattr(self, 'voice') and self.voice:
-            self.voice.announce(f"Waypoint added: {annotation}")
+            self.voice.announce(f"Waypoint added: {annotation}", category="gps_waypoint")
     
     def _write_gps_point(self, annotation=""):
         """Write a GPS point to the log file"""
@@ -3507,9 +3690,12 @@ class CoPilotApp:
                 if hasattr(self.gps_monitor, 'get_full_data'):
                     full_data = self.gps_monitor.get_full_data()
                     self._update_gps_logger_display(full_data)
+            # Periodically check intermittent mode suppression conditions
+            if self.config.get('gps_time_sync_enabled', False):
+                self._update_intermittent_state()
             # Schedule next update in 2 seconds
             self.root.after(2000, update_gps_logger)
-        
+
         # Start the update loop
         self.root.after(2000, update_gps_logger)
 
@@ -3668,7 +3854,7 @@ class CoPilotApp:
         
         # Voice announcement
         if self.voice:
-            self.voice.announce(f"APRS message from {from_call}")
+            self.voice.announce(f"APRS message from {from_call}", category="aprs_message")
         
         # Auto-fill reply To field
         self.aprs_to_var.set(from_call)
@@ -4240,7 +4426,7 @@ class CoPilotApp:
         
         if not os.path.exists(log_dir):
             self.add_alert("No logs directory found")
-            self.voice.announce("No logs directory found")
+            self.voice.announce("No logs directory found", category="operational")
             return
         
         # Find all ADIF files from the last 4 days (covers full contest weekend)
@@ -4254,7 +4440,7 @@ class CoPilotApp:
         
         if not adif_files:
             self.add_alert("No recent log files found (last 4 days)")
-            self.voice.announce("No recent log files found")
+            self.voice.announce("No recent log files found", category="operational")
             return
         
         # Sort by date (oldest first so we process in chronological order)
@@ -4356,11 +4542,11 @@ class CoPilotApp:
                 self.qso_tree.see(self.qso_tree.get_children()[-1])
             
             self.add_alert(f"Reloaded {qso_count} QSOs from {files_loaded} log file(s)")
-            self.voice.announce(f"Reloaded {qso_count} QSOs from {files_loaded} days")
+            self.voice.announce(f"Reloaded {qso_count} QSOs from {files_loaded} days", category="operational")
             
         except Exception as e:
             self.add_alert(f"Error reloading logs: {e}")
-            self.voice.announce("Error reloading logs")
+            self.voice.announce("Error reloading logs", category="operational")
     
     def _band_to_mhz(self, band_str):
         """Convert ADIF band string to MHz for QSY Advisor"""
@@ -4637,15 +4823,24 @@ class CoPilotApp:
             # Start GPS monitoring with configured precision
             grid_precision = self.config.get('grid_precision', 4)
             self.gps_monitor = GPSMonitor(
-                self.config['gps_port'], 
-                self.on_gps_update, 
+                self.config['gps_port'],
+                self.on_gps_update,
                 grid_precision,
-                lock_callback=self.on_gps_lock_change
+                lock_callback=self.on_gps_lock_change,
+                baudrate=self.config.get('gps_baudrate', None),
+                status_callback=self._on_gps_status_update
             )
             self.gps_monitor.start()
-            
+
             # Start periodic GPS Logger display updates (every 2 seconds)
             self._start_gps_logger_timer()
+
+            # Start GPS Time Sync timer if enabled (delay 10s to let GPS get a fix)
+            if self.config.get('gps_time_sync_enabled', False):
+                from modules.gps_monitor import GPSMonitor as _GM
+                if _GM.is_admin():
+                    self.root.after(10000, lambda: self._start_time_sync_timer())
+                    self.root.after(15000, lambda: self._perform_time_sync())  # First sync
             
             # Start battery monitoring
             if self.config['victron_address'] and self.config['victron_key']:
@@ -4772,7 +4967,7 @@ class CoPilotApp:
             
             # Voice announcement
             if old_grid != "----":
-                self.voice.announce(f"Grid change. Entering {grid}")
+                self.voice.announce(f"Grid change. Entering {grid}", category="grid_change")
                 self.add_alert(f"GRID CHANGE: {old_grid} → {grid}")
                 
                 # Post to Slack
@@ -4783,7 +4978,7 @@ class CoPilotApp:
                     bands_str += f" +{len(my_bands)-6} more"
                 self.post_to_slack(f"📍 {my_call}/R now in {grid} on {bands_str}")
             else:
-                self.voice.announce(f"Current grid is {grid}")
+                self.voice.announce(f"Current grid is {grid}", category="grid_change")
                 self.add_alert(f"GPS acquired. Current grid: {grid}")
         
         # Check for county changes (updates display and ADIF data)
@@ -4900,10 +5095,10 @@ class CoPilotApp:
             
             # Voice announcement
             if old_county:
-                self.voice.announce(f"County change. Now in {county_info.contest_name}")
+                self.voice.announce(f"County change. Now in {county_info.contest_name}", category="county_change")
                 self.add_alert(f"QSO PARTY COUNTY: {old_county} → {county_abbrev} ({county_info.contest_name})")
             else:
-                self.voice.announce(f"Current county is {county_info.contest_name}")
+                self.voice.announce(f"Current county is {county_info.contest_name}", category="county_change")
                 self.add_alert(f"QSO Party county detected: {county_abbrev} ({county_info.contest_name})")
             
             # Update Manual Entry "My County" field
@@ -4999,13 +5194,13 @@ class CoPilotApp:
         """Called when GPS lock status changes"""
         if has_lock:
             self.add_alert(f"GPS: Lock acquired ✓")
-            self.voice.announce("GPS lock acquired")
+            self.voice.announce("GPS lock acquired", category="warnings")
             # Update GPS indicator to green
             if hasattr(self, 'gps_indicator'):
                 self.gps_indicator.config(fg='green')
         else:
             self.add_alert(f"GPS: Lock lost ✗", priority=True)
-            self.voice.announce("Warning: GPS lock lost")
+            self.voice.announce("Warning: GPS lock lost", category="warnings")
             # Update GPS indicator to red
             if hasattr(self, 'gps_indicator'):
                 self.gps_indicator.config(fg='red')
@@ -5030,7 +5225,7 @@ class CoPilotApp:
         if voltage < 12.0:
             self.voltage_label.config(foreground='red')
             if voltage < 11.5:
-                self.voice.announce("Warning: Battery voltage critical")
+                self.voice.announce("Warning: Battery voltage critical", category="warnings")
         elif voltage < 12.5:
             self.voltage_label.config(foreground='orange')
         else:
@@ -5104,7 +5299,7 @@ class CoPilotApp:
                         if inst.get('udp_port') == port:
                             name = inst.get('name', 'Unknown')
                             short = name.split('(')[0].strip() if '(' in name else name
-                            self.voice.announce(f"Warning: {short} is not responding")
+                            self.voice.announce(f"Warning: {short} is not responding", category="warnings")
                             self.add_alert(f"WARNING: WSJT-X {short} lost connection!", priority=True)
                             break
             else:
@@ -5613,7 +5808,7 @@ class CoPilotApp:
             self.radio_updater.send_n1mm_roverqth_county(canonical)
         
         # Voice announcement
-        self.voice.announce(f"County set to {canonical}")
+        self.voice.announce(f"County set to {canonical}", category="operational")
         self.add_alert(f"QSO Party: {party_code} - {canonical}")
         
         # Update Manual Entry "My County" field
@@ -5625,7 +5820,7 @@ class CoPilotApp:
         """Called when a mobile APRS station is detected nearby"""
         msg = f"APRS: {callsign} ({symbol_desc}) {distance_mi:.1f} mi {bearing}"
         self.add_alert(msg, priority=True)
-        self.voice.announce(f"APRS station {callsign}, {distance_mi:.0f} miles {bearing}")
+        self.voice.announce(f"APRS station {callsign}, {distance_mi:.0f} miles {bearing}", category="aprs_nearby")
     
     def on_aprs_message(self, from_call, message, msgno):
         """Called when an APRS message is received"""
@@ -5654,7 +5849,7 @@ class CoPilotApp:
     def on_boundary_announcement(self, message):
         """Called when approaching a grid boundary"""
         self.add_alert(f"Grid: {message}", priority=False)
-        self.voice.announce(message)
+        self.voice.announce(message, category="grid_boundary")
     
     def on_new_decode(self, band, callsign, grid, is_new_grid, is_calling_me):
         """Called when new decode is found in WSJT-X logs"""
@@ -5668,12 +5863,12 @@ class CoPilotApp:
         if is_new_grid:
             msg = f"New grid {grid} on {band} from {callsign}"
             self.add_alert(msg, priority=True, callsign=callsign)
-            self.voice.announce(f"New grid {grid} on {band}")
+            self.voice.announce(f"New grid {grid} on {band}", category="new_decode")
         
         if is_calling_me:
             msg = f"{callsign} calling you on {band}"
             self.add_alert(msg, priority=True, callsign=callsign)
-            self.voice.announce(f"{callsign} calling on {band}")
+            self.voice.announce(f"{callsign} calling on {band}", category="new_decode")
 
     def on_priority_decode(self, band, callsign, freq_mhz):
         """Called when a priority station is decoded in ALL.TXT"""
@@ -5735,9 +5930,9 @@ class CoPilotApp:
             return  # Already voiced within 2 minutes
         self._priority_voice_times[key] = now
         if voice_msg:
-            self.voice.announce(voice_msg)
+            self.voice.announce(voice_msg, category="priority_dx")
         else:
-            self.voice.announce(f"D X Priority {callsign} on {band}")
+            self.voice.announce(f"D X Priority {callsign} on {band}", category="priority_dx")
 
     def _parse_priority_stations(self, stations_str):
         """Parse comma-separated callsign list into a set of uppercase callsigns"""
@@ -5820,7 +6015,7 @@ class CoPilotApp:
             if hasattr(self, 'radio_updater') and self.radio_updater:
                 self.radio_updater.send_n1mm_roverqth_county(self.current_county)
                 self.add_alert(f"Sent to {logger_name}: {self.current_county}")
-                self.voice.announce(f"{logger_name} updated to {self.current_county}")
+                self.voice.announce(f"{logger_name} updated to {self.current_county}", category="operational")
             else:
                 messagebox.showerror("Error", "Radio updater not initialized")
         else:
@@ -5832,7 +6027,7 @@ class CoPilotApp:
             if hasattr(self, 'radio_updater') and self.radio_updater:
                 self.radio_updater.send_logger_grid(self.current_grid)
                 self.add_alert(f"Sent to {logger_name}: {self.current_grid}")
-                self.voice.announce(f"{logger_name} updated to {self.current_grid}")
+                self.voice.announce(f"{logger_name} updated to {self.current_grid}", category="operational")
             else:
                 messagebox.showerror("Error", "Radio updater not initialized")
     
@@ -5858,15 +6053,23 @@ class CoPilotApp:
     def _reconnect_gps(self):
         """Reconnect GPS with new port setting"""
         new_port = self.gps_port_var.get()
-        
+
         if not new_port:
             messagebox.showwarning("GPS", "Please select a COM port")
             return
-        
-        # Save to config
+
+        # Save port and baud rate to config
         self.config['gps_port'] = new_port
+        baud_str = self.gps_baudrate_var.get() if hasattr(self, 'gps_baudrate_var') else 'Auto'
+        self.config['gps_baudrate'] = None if baud_str == 'Auto' else int(baud_str)
         self.save_config()
-        
+
+        self._reconnect_gps_internal()
+
+    def _reconnect_gps_internal(self):
+        """Internal GPS reconnect using current config settings."""
+        port = self.config.get('gps_port', 'COM3')
+
         # Stop existing GPS monitor
         if hasattr(self, 'gps_monitor') and self.gps_monitor:
             try:
@@ -5874,22 +6077,629 @@ class CoPilotApp:
                 self.add_alert(f"GPS: Disconnected")
             except Exception as e:
                 print(f"GPS: Error stopping: {e}")
-        
+
         # Start new GPS monitor
         try:
             grid_precision = self.config.get('grid_precision', 4)
             self.gps_monitor = GPSMonitor(
-                new_port, 
-                self.on_gps_update, 
+                port,
+                self.on_gps_update,
                 grid_precision,
-                lock_callback=self.on_gps_lock_change
+                lock_callback=self.on_gps_lock_change,
+                baudrate=self.config.get('gps_baudrate', None),
+                status_callback=self._on_gps_status_update
             )
             self.gps_monitor.start()
-            self.add_alert(f"GPS: Connecting to {new_port}...")
+            self.add_alert(f"GPS: Connecting to {port}...")
         except Exception as e:
             self.add_alert(f"GPS: Failed to connect - {e}")
-            messagebox.showerror("GPS Error", f"Could not connect to {new_port}:\n{e}")
+            messagebox.showerror("GPS Error", f"Could not connect to {port}:\n{e}")
     
+    def _on_gps_baud_changed(self, event=None):
+        """Handle baud rate dropdown change — sends UBX command to GPS device."""
+        selected = self.gps_baudrate_var.get()
+
+        if selected == 'Auto':
+            self.config['gps_baudrate'] = None
+            self.save_config()
+            self._update_rate_combo_state()
+            self.add_alert("GPS: Baud rate set to Auto-detect")
+            return
+
+        new_rate = int(selected)
+
+        if not hasattr(self, 'gps_monitor') or not self.gps_monitor:
+            # No active GPS — just save preference
+            self.config['gps_baudrate'] = new_rate
+            self.save_config()
+            self._update_rate_combo_state()
+            self.add_alert(f"GPS: Baud rate preference saved as {new_rate}")
+            return
+
+        current_rate = self.gps_monitor.detected_baudrate or 9600
+        if new_rate == current_rate:
+            self.config['gps_baudrate'] = new_rate
+            self.save_config()
+            self._update_rate_combo_state()
+            return
+
+        # Confirm before reprogramming the GPS device
+        if not messagebox.askyesno("Change GPS Baud Rate",
+                f"This will reprogram the GPS device to output at {new_rate} baud.\n\n"
+                f"The GPS will briefly disconnect during the change.\n\n"
+                f"Proceed?"):
+            # Revert dropdown
+            self.gps_baudrate_var.set(str(current_rate) if current_rate else 'Auto')
+            return
+
+        self.add_alert(f"GPS: Changing baud rate to {new_rate}...")
+        self.gps_baud_status_var.set(f"Changing to {new_rate}...")
+
+        def do_change():
+            success = False
+            try:
+                self.gps_monitor.stop()
+                time.sleep(1.0)  # Give Windows time to release COM port
+                success = self.gps_monitor.change_baudrate(new_rate)
+            except Exception as e:
+                print(f"GPS: Baud rate change error: {e}")
+                success = False
+
+            def on_complete():
+                if success:
+                    self.config['gps_baudrate'] = new_rate
+                    self.save_config()
+                    self.gps_baud_status_var.set(f"Active: {new_rate} baud")
+                    self.add_alert(f"GPS: Baud rate changed to {new_rate}")
+                    if hasattr(self, 'voice') and self.voice:
+                        self.voice.announce(f"GPS baud rate changed to {new_rate}", category="operational")
+                    self._update_rate_combo_state()
+                else:
+                    self.gps_baud_status_var.set("Change failed!")
+                    self.add_alert(f"GPS: Baud rate change FAILED")
+                    messagebox.showerror("GPS Error",
+                        f"Failed to change GPS baud rate to {new_rate}.\n"
+                        f"The GPS may need to be power-cycled.")
+                    # Revert dropdown
+                    self.gps_baudrate_var.set(str(current_rate) if current_rate else 'Auto')
+
+                # Restart GPS monitor
+                self._reconnect_gps_internal()
+
+            self.root.after(0, on_complete)
+
+        threading.Thread(target=do_change, daemon=True).start()
+
+    def _on_gps_rate_changed(self, event=None):
+        """Handle update rate dropdown change."""
+        hz = int(self.gps_update_rate_var.get())
+
+        if not hasattr(self, 'gps_monitor') or not self.gps_monitor:
+            self.config['gps_update_rate_hz'] = hz
+            self.save_config()
+            return
+
+        current_baud = self.gps_monitor.detected_baudrate or 9600
+        if hz > 1 and current_baud < 19200:
+            messagebox.showwarning("GPS Update Rate",
+                f"Update rates above 1Hz require at least 19200 baud.\n"
+                f"Current baud rate is {current_baud}.\n"
+                f"Please increase the baud rate first.")
+            self.gps_update_rate_var.set('1')
+            return
+
+        # Stop monitor, send command, restart
+        def do_rate_change():
+            success = False
+            try:
+                self.gps_monitor.stop()
+                time.sleep(1.0)  # Give Windows time to release COM port
+                success = self.gps_monitor.change_update_rate(hz)
+            except Exception as e:
+                print(f"GPS: Update rate change error: {e}")
+                success = False
+
+            def on_complete():
+                if success:
+                    self.config['gps_update_rate_hz'] = hz
+                    self.save_config()
+                    self.add_alert(f"GPS: Update rate set to {hz}Hz")
+                else:
+                    self.add_alert(f"GPS: Failed to set update rate")
+                    self.gps_update_rate_var.set('1')
+
+                self._reconnect_gps_internal()
+
+            self.root.after(0, on_complete)
+
+        threading.Thread(target=do_rate_change, daemon=True).start()
+
+    def _auto_detect_gps_baud(self):
+        """Run baud rate auto-detection in background thread."""
+        port = self.gps_port_var.get() if hasattr(self, 'gps_port_var') else self.config.get('gps_port', 'COM3')
+        if not port:
+            messagebox.showwarning("GPS", "Please select a COM port first")
+            return
+
+        self.gps_baud_status_var.set("Detecting...")
+        self.add_alert(f"GPS: Auto-detecting baud rate on {port}...")
+
+        # Stop existing monitor if running
+        if hasattr(self, 'gps_monitor') and self.gps_monitor:
+            try:
+                self.gps_monitor.stop()
+                time.sleep(0.5)
+            except Exception:
+                pass
+
+        def do_detect():
+            from modules.gps_monitor import GPSMonitor as TempGPS
+            temp_monitor = TempGPS(port, lambda *a: None)
+            temp_monitor.running = True
+            detected = temp_monitor.auto_detect_baudrate()
+            temp_monitor.running = False
+
+            def on_result():
+                if detected:
+                    self.gps_baudrate_var.set(str(detected))
+                    self.gps_baud_status_var.set(f"Detected: {detected} baud")
+                    self.config['gps_baudrate'] = detected
+                    self.save_config()
+                    self.add_alert(f"GPS: Auto-detected {detected} baud")
+                    self._update_rate_combo_state()
+                else:
+                    self.gps_baud_status_var.set("Detection failed!")
+                    self.add_alert(f"GPS: Auto-detect failed - check connection")
+
+                # Restart monitor with detected rate
+                self._reconnect_gps_internal()
+
+            self.root.after(0, on_result)
+
+        threading.Thread(target=do_detect, daemon=True).start()
+
+    def _update_rate_combo_state(self):
+        """Enable/disable update rate dropdown based on current baud rate."""
+        if not hasattr(self, 'gps_rate_combo'):
+            return
+
+        baud_str = self.gps_baudrate_var.get() if hasattr(self, 'gps_baudrate_var') else 'Auto'
+        if baud_str == 'Auto':
+            # Check actual detected rate
+            if hasattr(self, 'gps_monitor') and self.gps_monitor:
+                baud = self.gps_monitor.detected_baudrate or 9600
+            else:
+                baud = 9600
+        else:
+            baud = int(baud_str)
+
+        if baud >= 19200:
+            self.gps_rate_combo.config(state='readonly')
+        else:
+            self.gps_rate_combo.config(state='disabled')
+            self.gps_update_rate_var.set('1')
+
+    def _on_gps_status_update(self, status):
+        """Called from GPSMonitor thread with baud rate detection status.
+        Schedules UI updates via root.after."""
+        def update():
+            if not hasattr(self, 'gps_baud_status_var'):
+                return
+
+            if status.get('detecting'):
+                rate = status.get('trying_rate', '?')
+                self.gps_baud_status_var.set(f"Trying {rate}...")
+            elif 'detected_rate' in status:
+                rate = status['detected_rate']
+                if rate:
+                    self.gps_baud_status_var.set(f"Active: {rate} baud")
+                    if hasattr(self, 'gps_baudrate_var'):
+                        self.gps_baudrate_var.set(str(rate))
+                    self._update_rate_combo_state()
+                else:
+                    self.gps_baud_status_var.set("No GPS detected")
+            elif status.get('connected'):
+                rate = status.get('detected_rate', '?')
+                self.gps_baud_status_var.set(f"Active: {rate} baud")
+                self._update_rate_combo_state()
+
+        self.root.after(0, update)
+
+    # ── GPS Time Sync Methods ──────────────────────────────────────────────
+
+    def _check_time_sync_admin(self):
+        """Check admin privileges and show warning if GPS Time Sync enabled without admin."""
+        from modules.gps_monitor import GPSMonitor
+        enabled = self.config.get('gps_time_sync_enabled', False)
+
+        if enabled and not GPSMonitor.is_admin():
+            self.gps_admin_warning_var.set(
+                "⚠ GPS Time Sync requires Co-Pilot to be launched as Administrator")
+            self.gps_time_sync_var.set(False)
+        else:
+            self.gps_admin_warning_var.set("")
+
+    def _on_time_sync_toggle(self):
+        """Handle GPS Time Sync enable/disable toggle."""
+        from modules.gps_monitor import GPSMonitor
+        enabled = self.gps_time_sync_var.get()
+
+        if enabled and not GPSMonitor.is_admin():
+            self.gps_admin_warning_var.set(
+                "⚠ GPS Time Sync requires Co-Pilot to be launched as Administrator")
+            self.gps_time_sync_var.set(False)
+            self.add_alert("GPS Time Sync: Requires Administrator privileges — feature disabled")
+            messagebox.showwarning("GPS Time Sync",
+                "GPS Time Sync requires Administrator privileges to set the system clock.\n\n"
+                "Please restart Co-Pilot as Administrator (right-click → Run as administrator).")
+            return
+
+        self.gps_admin_warning_var.set("")
+        self.config['gps_time_sync_enabled'] = enabled
+        self.save_config()
+
+        if enabled:
+            self.add_alert("GPS Time Sync: Enabled")
+            # Sync immediately, then start scheduled timer
+            self._time_sync_now()
+            self._start_time_sync_timer()
+        else:
+            self._stop_time_sync_timer()
+            # If intermittent mode had closed the port, reopen it
+            if self._intermittent_port_closed:
+                self._intermittent_port_closed = False
+                self._reconnect_gps_internal()
+            self.add_alert("GPS Time Sync: Disabled")
+            self.gps_sync_status_var.set("Disabled")
+
+    def _on_sync_interval_changed(self, event=None):
+        """Handle sync interval dropdown change."""
+        val = self.gps_sync_interval_var.get()
+        if val == 'Manual':
+            self.config['gps_time_sync_interval_minutes'] = 0
+        else:
+            self.config['gps_time_sync_interval_minutes'] = int(val)
+        self.save_config()
+
+        # Restart timer with new interval
+        if self.config.get('gps_time_sync_enabled', False):
+            self._stop_time_sync_timer()
+            if val != 'Manual':
+                self._start_time_sync_timer()
+            self.add_alert(f"GPS Time Sync: Interval set to {val}")
+
+    def _on_intermittent_toggle(self):
+        """Handle intermittent mode toggle."""
+        enabled = self.gps_intermittent_var.get()
+        self.config['gps_time_sync_intermittent'] = enabled
+        self.save_config()
+
+        if not enabled and self._intermittent_port_closed:
+            # Re-open GPS port
+            self._intermittent_port_closed = False
+            self._reconnect_gps_internal()
+            self.add_alert("GPS Time Sync: Intermittent mode off — GPS port reopened")
+        elif enabled:
+            self.add_alert("GPS Time Sync: Intermittent mode enabled")
+
+    def _update_intermittent_state(self):
+        """Enable/disable intermittent mode checkbox based on conditions.
+
+        Intermittent mode is only available when:
+        - Contest Mode is Daily DX
+        - GPS Logger is not active
+        - Speed is effectively zero (< 2 mph)
+        """
+        if not hasattr(self, 'gps_intermittent_cb'):
+            return
+
+        suppressed = False
+        reason = ""
+
+        mode = self.config.get('contest_mode', 'vhf')
+        if mode in ('vhf', '222up', 'qso_party'):
+            suppressed = True
+            reason = f"Intermittent mode disabled: {CONTEST_MODES.get(mode, mode)} mode"
+        elif hasattr(self, 'gps_logger_active') and self.gps_logger_active:
+            suppressed = True
+            reason = "Intermittent mode disabled: GPS Logger active"
+        elif hasattr(self, 'gps_monitor') and self.gps_monitor:
+            speed = self.gps_monitor.speed_mph
+            if speed is not None and speed > 2.0:
+                suppressed = True
+                reason = "Intermittent mode disabled: Vehicle in motion"
+
+        if suppressed:
+            self.gps_intermittent_cb.config(state='disabled')
+            self.gps_intermittent_hint.config(text=f"({reason})")
+            # If currently in intermittent mode with port closed, reopen
+            if self._intermittent_port_closed:
+                self._intermittent_port_closed = False
+                self._reconnect_gps_internal()
+        else:
+            self.gps_intermittent_cb.config(state='normal')
+            self.gps_intermittent_hint.config(
+                text="(close GPS between syncs to reduce RF noise)")
+
+    def _start_time_sync_timer(self):
+        """Start the periodic time sync timer."""
+        self._stop_time_sync_timer()
+
+        interval_min = self.config.get('gps_time_sync_interval_minutes', 5)
+        if interval_min <= 0:
+            return  # Manual only
+
+        interval_ms = interval_min * 60 * 1000
+
+        def tick():
+            if not self.config.get('gps_time_sync_enabled', False):
+                return
+            self._perform_time_sync()
+            self._time_sync_timer_id = self.root.after(interval_ms, tick)
+
+        self._time_sync_timer_id = self.root.after(interval_ms, tick)
+
+    def _stop_time_sync_timer(self):
+        """Cancel the periodic time sync timer."""
+        if self._time_sync_timer_id is not None:
+            try:
+                self.root.after_cancel(self._time_sync_timer_id)
+            except Exception:
+                pass
+            self._time_sync_timer_id = None
+
+    def _time_sync_now(self):
+        """Manual 'Sync Now' button handler."""
+        if not self.config.get('gps_time_sync_enabled', False):
+            # Allow manual sync even when disabled — just check admin
+            from modules.gps_monitor import GPSMonitor
+            if not GPSMonitor.is_admin():
+                messagebox.showwarning("GPS Time Sync",
+                    "Administrator privileges required to set the system clock.")
+                return
+
+        self.gps_sync_status_var.set("Syncing...")
+        self._perform_time_sync()
+
+    def _perform_time_sync(self):
+        """Execute a single GPS time sync operation in a background thread."""
+        intermittent = (self.config.get('gps_time_sync_intermittent', False)
+                        and not self._is_intermittent_suppressed())
+
+        def do_sync():
+            result = None
+            try:
+                monitor = self.gps_monitor if hasattr(self, 'gps_monitor') else None
+
+                if monitor is None:
+                    result = {'success': False, 'error': 'GPS monitor not running'}
+                    return
+
+                # If intermittent mode had port closed, reopen and wait for fix
+                if intermittent and self._intermittent_port_closed:
+                    self.root.after(0, lambda: self.gps_sync_status_var.set(
+                        "Opening GPS port..."))
+                    self._intermittent_port_closed = False
+                    self.root.after(0, self._reconnect_gps_internal)
+                    # Wait up to 15s for a valid GPS fix
+                    for _ in range(30):
+                        time.sleep(0.5)
+                        if (monitor.gps_fix_quality >= 1
+                                and monitor.gps_datetime_utc is not None):
+                            break
+                    else:
+                        result = {'success': False,
+                                  'error': 'Timeout waiting for GPS fix'}
+                        return
+
+                # Need fix to sync
+                if monitor.gps_fix_quality < 1 or monitor.gps_datetime_utc is None:
+                    result = {'success': False,
+                              'error': 'No GPS fix — waiting for next cycle'}
+                    return
+
+                result = monitor.sync_system_clock()
+
+            except Exception as e:
+                result = {'success': False, 'error': str(e)}
+            finally:
+                # Schedule UI update
+                sync_result = result or {'success': False, 'error': 'Unknown error'}
+
+                def on_complete():
+                    self._on_time_sync_complete(sync_result)
+
+                    # Intermittent: close port after sync
+                    if (intermittent
+                            and self.config.get('gps_time_sync_enabled', False)
+                            and not self._is_intermittent_suppressed()):
+                        self._close_gps_for_intermittent()
+
+                self.root.after(0, on_complete)
+
+        threading.Thread(target=do_sync, daemon=True).start()
+
+    def _on_time_sync_complete(self, result):
+        """Handle time sync result — update UI, log, update WSJT-X grid."""
+        if result.get('success'):
+            offset_ms = result.get('offset_ms', 0)
+            self._time_sync_last_sync = datetime.now()
+            self._time_sync_last_offset_ms = offset_ms
+
+            fix_labels = {0: 'None', 1: 'GPS', 2: 'DGPS'}
+            fix_label = fix_labels.get(result.get('fix_quality', 0), '?')
+            sats = result.get('satellites', 0)
+
+            status = (f"Last sync: {self._time_sync_last_sync.strftime('%H:%M:%S')} "
+                      f"({offset_ms:+.0f}ms) | Fix: {fix_label} | Sats: {sats}")
+            self.gps_sync_status_var.set(status)
+            self.add_alert(f"GPS Time Sync: Clock set ({offset_ms:+.0f}ms offset)")
+
+            # Log sync event
+            self._log_time_sync(result)
+
+            # Update WSJT-X grid squares if enabled
+            if self.config.get('gps_time_sync_update_grid', True):
+                self._update_wsjtx_grid_squares()
+
+            # Update intermittent state (speed may have changed)
+            self._update_intermittent_state()
+
+        else:
+            error = result.get('error', 'Unknown error')
+            self.gps_sync_status_var.set(f"Sync failed: {error}")
+            print(f"GPS Time Sync: Failed — {error}")
+
+    def _log_time_sync(self, result):
+        """Append sync event to the time sync log file."""
+        try:
+            self._time_sync_log_path.parent.mkdir(exist_ok=True)
+            with open(self._time_sync_log_path, 'a') as f:
+                ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                gps_time = result.get('gps_time', '')
+                if hasattr(gps_time, 'strftime'):
+                    gps_time = gps_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                offset = result.get('offset_ms', 0)
+                fix = result.get('fix_quality', 0)
+                sats = result.get('satellites', 0)
+                fix_labels = {0: 'None', 1: 'GPS', 2: 'DGPS'}
+                f.write(f"{ts} | GPS={gps_time} | offset={offset:+.0f}ms "
+                        f"| fix={fix_labels.get(fix, '?')} | sats={sats}\n")
+        except Exception as e:
+            print(f"GPS Time Sync: Log write error: {e}")
+
+    def _update_wsjtx_grid_squares(self):
+        """Write current 4-char grid to all active WSJT-X instance INI files."""
+        if not hasattr(self, 'gps_monitor') or not self.gps_monitor:
+            return
+
+        grid_4char = self.current_grid
+        if not grid_4char or grid_4char == '----' or len(grid_4char) < 4:
+            return
+
+        grid_4char = grid_4char[:4]  # Ensure 4-char
+        updated = 0
+
+        for instance in self.config.get('wsjt_instances', []):
+            log_path = instance.get('log_path', '').strip()
+            if not log_path:
+                continue
+
+            # WSJT-X INI file is in the parent of the log directory
+            # Log path might be the log directory itself or contain wsjtx_log.adi
+            # The INI file is at the same level: e.g., %LOCALAPPDATA%/WSJT-X/WSJT-X.ini
+            try:
+                log_dir = Path(log_path)
+                if log_dir.is_file():
+                    log_dir = log_dir.parent
+
+                # Try common INI locations relative to log dir
+                ini_candidates = [
+                    log_dir / 'WSJT-X.ini',
+                    log_dir.parent / 'WSJT-X.ini',
+                ]
+
+                for ini_path in ini_candidates:
+                    if ini_path.exists():
+                        self._write_grid_to_ini(ini_path, grid_4char)
+                        updated += 1
+                        break
+
+            except Exception as e:
+                print(f"GPS Time Sync: Error updating WSJT-X grid for {instance.get('name', '?')}: {e}")
+
+        if updated > 0:
+            print(f"GPS Time Sync: Updated MyGrid={grid_4char} in {updated} WSJT-X INI file(s)")
+
+    def _write_grid_to_ini(self, ini_path, grid):
+        """Write MyGrid= value to [Common] section of a WSJT-X INI file."""
+        try:
+            lines = ini_path.read_text(encoding='utf-8').splitlines(keepends=True)
+            in_common = False
+            found_mygrid = False
+            new_lines = []
+
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith('['):
+                    if in_common and not found_mygrid:
+                        # End of [Common] without finding MyGrid — add it
+                        new_lines.append(f'MyGrid={grid}\n')
+                        found_mygrid = True
+                    in_common = (stripped == '[Common]')
+                    new_lines.append(line)
+                elif in_common and stripped.startswith('MyGrid='):
+                    new_lines.append(f'MyGrid={grid}\n')
+                    found_mygrid = True
+                else:
+                    new_lines.append(line)
+
+            # If [Common] was last section and MyGrid not found
+            if in_common and not found_mygrid:
+                new_lines.append(f'MyGrid={grid}\n')
+
+            ini_path.write_text(''.join(new_lines), encoding='utf-8')
+
+        except Exception as e:
+            print(f"GPS Time Sync: Error writing grid to {ini_path}: {e}")
+
+    def _is_intermittent_suppressed(self):
+        """Check if intermittent mode should be suppressed."""
+        mode = self.config.get('contest_mode', 'vhf')
+        if mode in ('vhf', '222up', 'qso_party'):
+            return True
+        if hasattr(self, 'gps_logger_active') and self.gps_logger_active:
+            return True
+        if hasattr(self, 'gps_monitor') and self.gps_monitor:
+            speed = self.gps_monitor.speed_mph
+            if speed is not None and speed > 2.0:
+                return True
+        return False
+
+    def _close_gps_for_intermittent(self):
+        """Close GPS serial port for intermittent mode (RF noise reduction)."""
+        if self._intermittent_port_closed:
+            return
+
+        if hasattr(self, 'gps_monitor') and self.gps_monitor:
+            try:
+                self.gps_monitor.stop()
+                self._intermittent_port_closed = True
+                self.gps_sync_status_var.set(
+                    self.gps_sync_status_var.get() + " | Port closed (intermittent)")
+                print("GPS Time Sync: Port closed (intermittent mode)")
+            except Exception as e:
+                print(f"GPS Time Sync: Error closing port: {e}")
+
+    # ── Voice Alert Control Methods ──────────────────────────────────────
+
+    def _on_voice_master_toggle(self):
+        """Handle master voice enable/disable toggle."""
+        enabled = self.voice_enabled_var.get()
+        self.voice.set_enabled(enabled)
+        self.config['voice_enabled'] = enabled
+        self.save_config()
+        self._update_voice_category_states()
+        self.add_alert(f"Voice alerts {'enabled' if enabled else 'disabled'}")
+
+    def _on_voice_category_change(self):
+        """Handle individual voice category toggle."""
+        disabled = set()
+        for key, var in self.voice_category_vars.items():
+            if not var.get():
+                disabled.add(key)
+        self.voice.disabled_categories = disabled
+        self.config['voice_disabled_categories'] = sorted(disabled)
+        self.save_config()
+
+    def _update_voice_category_states(self):
+        """Grey out / enable individual category checkbuttons based on master switch."""
+        if not hasattr(self, 'voice_category_cbs'):
+            return
+        state = 'normal' if self.voice_enabled_var.get() else 'disabled'
+        for key, cb in self.voice_category_cbs.items():
+            cb.config(state=state)
+
     def discover_victron(self):
         """Discover Victron devices via Bluetooth"""
         # This will be implemented in battery_monitor module
@@ -5994,6 +6804,30 @@ class CoPilotApp:
         self.config['my_call'] = self.my_call_var.get().strip().upper()
         
         self.config['gps_port'] = self.gps_port_var.get()
+        # GPS baud rate and update rate
+        if hasattr(self, 'gps_baudrate_var'):
+            baud_str = self.gps_baudrate_var.get()
+            self.config['gps_baudrate'] = None if baud_str == 'Auto' else int(baud_str)
+        if hasattr(self, 'gps_update_rate_var'):
+            self.config['gps_update_rate_hz'] = int(self.gps_update_rate_var.get())
+        # GPS Time Sync settings
+        if hasattr(self, 'gps_time_sync_var'):
+            self.config['gps_time_sync_enabled'] = self.gps_time_sync_var.get()
+        if hasattr(self, 'gps_sync_interval_var'):
+            val = self.gps_sync_interval_var.get()
+            self.config['gps_time_sync_interval_minutes'] = 0 if val == 'Manual' else int(val)
+        if hasattr(self, 'gps_intermittent_var'):
+            self.config['gps_time_sync_intermittent'] = self.gps_intermittent_var.get()
+        if hasattr(self, 'gps_sync_grid_var'):
+            self.config['gps_time_sync_update_grid'] = self.gps_sync_grid_var.get()
+        # Voice alert settings
+        if hasattr(self, 'voice_enabled_var'):
+            self.config['voice_enabled'] = self.voice_enabled_var.get()
+            self.voice.set_enabled(self.config['voice_enabled'])
+        if hasattr(self, 'voice_category_vars'):
+            disabled = [k for k, v in self.voice_category_vars.items() if not v.get()]
+            self.config['voice_disabled_categories'] = sorted(disabled)
+            self.voice.disabled_categories = set(disabled)
         self.config['victron_address'] = self.victron_addr_var.get()
         self.config['victron_key'] = self.victron_key_var.get()
         

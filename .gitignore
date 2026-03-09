@@ -29,6 +29,7 @@ Desktop.ini
 config/settings.json
 logs/*.adi
 logs/*.csv
+logs/*.log
 logs/*.xml
 data/master.dta
 

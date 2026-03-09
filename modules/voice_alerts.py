@@ -13,18 +13,22 @@ class VoiceAlerter:
         self.message_queue = queue.Queue()
         self.running = False
         self.thread = None
-        
+
+        # Master enable and per-category filtering
+        self.enabled = True                  # Master on/off
+        self.disabled_categories = set()     # Category keys to suppress
+
         # Start announcement thread
         self.running = True
         self.thread = threading.Thread(target=self._announce_loop, daemon=True)
         self.thread.start()
-        
+
         print("Voice: Text-to-speech initialized")
-    
+
     def _spell_out(self, text):
         """
         Convert callsigns and grids to spelled-out format for TTS
-        
+
         Examples:
             "EM15" -> "E M 1 5"
             "W1AW" -> "W 1 A W"
@@ -34,17 +38,17 @@ class VoiceAlerter:
         # For grids, just use first 4 characters (letter-letter-number-number)
         if re.match(r'^[A-Z]{2}\d{2}', text.upper()):
             text = text[:4]
-        
+
         # Space out each character
         return ' '.join(text.upper())
-    
+
     def _format_message(self, message):
         """
         Format a message for TTS, spelling out callsigns and grids
         """
         # Pattern to find callsigns (letter/number combinations like W1AW, N5ZY, AA5AM)
         # and grids (like EM15, EM15fp, FN31)
-        
+
         # Find potential callsigns/grids (alphanumeric sequences of 4-6 chars)
         def replace_with_spelled(match):
             word = match.group(0)
@@ -61,34 +65,71 @@ class VoiceAlerter:
                 # Short callsign like K5D
                 return self._spell_out(word)
             return word
-        
+
         # Replace callsign/grid patterns
         formatted = re.sub(r'\b[A-Z]{1,2}\d{1,2}[A-Z]{0,3}\b', replace_with_spelled, message, flags=re.IGNORECASE)
         formatted = re.sub(r'\b[A-Z]{2}\d{2}[a-z]{0,2}\b', replace_with_spelled, formatted, flags=re.IGNORECASE)
-        
+
         return formatted
-    
-    def announce(self, message):
+
+    def announce(self, message, category=None):
         """
-        Queue a message for voice announcement
-        
+        Queue a message for voice announcement.
+
         Args:
             message: Text to speak
+            category: Alert category key for filtering (e.g. 'grid_change',
+                      'warnings'). None = always play (test/debug calls).
         """
+        # Apply master + category filtering when a category is specified
+        if category is not None:
+            if not self.enabled:
+                print(f"Voice: Suppressed (master off): {message}")
+                return
+            if category in self.disabled_categories:
+                print(f"Voice: Suppressed ('{category}' off): {message}")
+                return
+
         # Format message to spell out callsigns and grids
         formatted = self._format_message(message)
         self.message_queue.put(formatted)
         print(f"Voice: Queued announcement: {message} -> '{formatted}'")
-    
+
+    def set_enabled(self, enabled):
+        """Set master voice enable/disable."""
+        self.enabled = enabled
+        print(f"Voice: Master {'enabled' if enabled else 'disabled'}")
+
+    def set_category_enabled(self, category, enabled):
+        """Enable or disable a specific alert category."""
+        if enabled:
+            self.disabled_categories.discard(category)
+        else:
+            self.disabled_categories.add(category)
+        print(f"Voice: Category '{category}' {'enabled' if enabled else 'disabled'}")
+
+    def load_settings(self, config):
+        """Load voice settings from a config dict.
+
+        Args:
+            config: dict with optional keys 'voice_enabled' (bool)
+                    and 'voice_disabled_categories' (list of str)
+        """
+        self.enabled = config.get('voice_enabled', True)
+        disabled = config.get('voice_disabled_categories', [])
+        self.disabled_categories = set(disabled)
+        print(f"Voice: Loaded settings — master={'on' if self.enabled else 'off'}, "
+              f"disabled={sorted(self.disabled_categories) or 'none'}")
+
     def _announce_loop(self):
         """Process announcement queue (runs in separate thread)"""
         import pyttsx3
-        
+
         while self.running:
             try:
                 # Wait for message with timeout
                 message = self.message_queue.get(timeout=1)
-                
+
                 # Create a fresh engine for each announcement
                 # This avoids the pyttsx3 threading issues
                 try:
@@ -101,15 +142,15 @@ class VoiceAlerter:
                     del engine
                 except Exception as e:
                     print(f"Voice: Error speaking '{message}': {e}")
-                
+
                 self.message_queue.task_done()
-                
+
             except queue.Empty:
                 # No messages, continue waiting
                 pass
             except Exception as e:
                 print(f"Voice: Error in announce loop: {e}")
-    
+
     def stop(self):
         """Stop the voice alerter"""
         self.running = False
