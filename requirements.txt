@@ -11,8 +11,9 @@ victron-ble>=0.5.0
 # Text-to-Speech
 pyttsx3>=2.90
 
-# Keyboard automation for N1MM+
-pyautogui>=0.9.54
+# County Lookup (shapefile + geometry)
+pyshp>=2.3
+shapely>=2.0
 
 # GUI (built into Python, but listed for completeness)
 # tkinter - included with Python on Windows
