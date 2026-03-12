@@ -1165,17 +1165,14 @@ class RadioUpdater:
         fields.append(f"<band:{len(band)}>{band}")
         
         # Mode/submode handling per ADIF 3.1.x spec
-        # SSB submodes: USB, LSB
-        # MFSK submodes: FT8, FT4, Q65, JT65, JT9, FST4, etc.
+        # Modern ADIF (3.1.1+) recognizes FT8, FT4, Q65, etc. as primary modes
+        # Only SSB needs submode conversion (USB/LSB -> SSB)
         mode = qso_data['mode']
         submode = ''
-        
+
         if mode.upper() in ('USB', 'LSB'):
             submode = mode.upper()
             mode = 'SSB'
-        elif mode.upper() in ('FT8', 'FT4', 'Q65', 'JT65', 'JT9', 'FST4', 'FST4W', 'JT4', 'WSPR', 'MSK144'):
-            submode = mode.upper()
-            mode = 'MFSK'
         
         fields.append(f"<mode:{len(mode)}>{mode}")
         if submode:

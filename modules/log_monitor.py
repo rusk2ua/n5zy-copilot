@@ -194,7 +194,7 @@ class LogMonitor:
             for part in parts[1:5]:  # Check first few fields after timestamp
                 try:
                     freq = float(part)
-                    if 28 <= freq <= 30000:  # Valid ham frequency range in MHz
+                    if 1.8 <= freq <= 30000:  # Valid ham frequency range in MHz
                         actual_freq_mhz = freq
                         break
                 except ValueError:
@@ -349,20 +349,20 @@ class LogMonitor:
         the exact band from ALL.TXT alone. This returns the first matching band
         hint or the instance name itself.
         """
-        # Map band names/hints to frequencies
+        # Map band names/hints to band display names (consistent with _freq_to_band output)
         band_map = {
-            '6m': '50',
+            '6m': '6m',
             'hf': 'HF',
-            '2m': '144',
-            '222': '222',
-            '1.25m': '222',
-            '432': '432',
-            '70cm': '432',
-            '902': '902',
-            '33cm': '902',
-            '1296': '1296',
-            '23cm': '1296',
-            '10g': '10368',
+            '2m': '2m',
+            '222': '1.25m',
+            '1.25m': '1.25m',
+            '432': '70cm',
+            '70cm': '70cm',
+            '902': '33cm',
+            '33cm': '33cm',
+            '1296': '23cm',
+            '23cm': '23cm',
+            '10g': '3cm',
         }
         
         name_lower = band_name.lower()
