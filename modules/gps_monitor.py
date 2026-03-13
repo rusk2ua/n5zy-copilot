@@ -191,6 +191,8 @@ class GPSMonitor:
         self.gps_fix_quality = 0        # 0=none, 1=GPS, 2=DGPS
         self.last_rmc_date = None       # datestamp from last RMC sentence
         self.last_rmc_time = None       # timestamp from last RMC sentence
+        self._gps_datetime_monotonic = 0  # time.monotonic() when gps_datetime_utc was last updated
+        self._last_sync_monotonic = 0     # time.monotonic() when last sync_system_clock succeeded
 
         # Track statistics
         self.track_distance_mi = 0.0
@@ -548,6 +550,7 @@ class GPSMonitor:
                                             self.gps_datetime_utc = datetime.combine(
                                                 msg.datestamp, msg.timestamp
                                             ).replace(tzinfo=timezone.utc)
+                                            self._gps_datetime_monotonic = time.monotonic()
                                         except (TypeError, ValueError):
                                             pass
                                 except:
@@ -627,6 +630,26 @@ class GPSMonitor:
                 'satellites': self.satellites,
             }
 
+        # Safety: Check GPS data freshness — reject stale timestamps
+        gps_age_s = time.monotonic() - self._gps_datetime_monotonic
+        if self._gps_datetime_monotonic > 0 and gps_age_s > 30.0:
+            return {
+                'success': False,
+                'error': f'GPS time data is stale ({gps_age_s:.0f}s old) — skipping sync',
+                'fix_quality': self.gps_fix_quality,
+                'satellites': self.satellites,
+            }
+
+        # Safety: Rate limit — minimum 60s between syncs (monotonic)
+        since_last_sync = time.monotonic() - self._last_sync_monotonic
+        if self._last_sync_monotonic > 0 and since_last_sync < 60.0:
+            return {
+                'success': False,
+                'error': f'Rate limited — last sync {since_last_sync:.0f}s ago',
+                'fix_quality': self.gps_fix_quality,
+                'satellites': self.satellites,
+            }
+
         # Check admin
         if not self.is_admin():
             return {
@@ -640,6 +663,24 @@ class GPSMonitor:
         system_utc = datetime.now(timezone.utc)
         offset_delta = gps_utc - system_utc
         offset_ms = offset_delta.total_seconds() * 1000.0
+
+        # Safety: Reject unreasonably large offsets (> 30 seconds)
+        # A properly functioning GPS should never need to adjust by more than a few seconds.
+        # Large offsets indicate stale GPS data or a feedback loop.
+        MAX_OFFSET_MS = 30000.0  # 30 seconds
+        if abs(offset_ms) > MAX_OFFSET_MS:
+            print(f"GPS Time Sync: BLOCKED — offset {offset_ms:+.0f}ms exceeds "
+                  f"±{MAX_OFFSET_MS:.0f}ms safety limit. GPS time: {gps_utc}, "
+                  f"System time: {system_utc}")
+            return {
+                'success': False,
+                'error': (f'Offset {offset_ms/1000:+.1f}s exceeds ±{MAX_OFFSET_MS/1000:.0f}s '
+                          f'safety limit — possible stale GPS data'),
+                'offset_ms': offset_ms,
+                'gps_time': gps_utc,
+                'fix_quality': self.gps_fix_quality,
+                'satellites': self.satellites,
+            }
 
         try:
             # Build SYSTEMTIME structure for SetSystemTime
@@ -679,6 +720,8 @@ class GPSMonitor:
                     'fix_quality': self.gps_fix_quality,
                     'satellites': self.satellites,
                 }
+
+            self._last_sync_monotonic = time.monotonic()
 
             fix_label = {0: 'None', 1: 'GPS', 2: 'DGPS'}.get(self.gps_fix_quality, str(self.gps_fix_quality))
             print(f"GPS Time Sync: Clock set to {gps_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC "

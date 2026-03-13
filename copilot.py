@@ -87,6 +87,12 @@ class CoPilotApp:
         self.battery_current = 0.0
         self.battery_soc = 100.0
         
+        # SMS rate limiting
+        self._sms_last_send_time = 0
+
+        # APRS nearby stations for rover broadcasts: {callsign: (distance_mi, bearing, timestamp)}
+        self.nearby_aprs_stations = {}
+
         # QSO Party data (loaded from N1MM+ QSOParty.sec file)
         self.qso_parties = {}
         self._load_qsoparty_data()
@@ -187,6 +193,16 @@ class CoPilotApp:
                 # QRZ lookup (fallback when SCP has no matches)
                 'qrz_username': '',
                 'qrz_password': '',
+                # SMS (Twilio) notification settings
+                'sms_enabled': False,
+                'twilio_account_sid': '',
+                'twilio_auth_token': '',
+                'twilio_from_number': '',
+                'twilio_to_number': '',
+                'sms_on_priority': True,     # DX! priority stations
+                'sms_on_dx2': True,          # New DXCC entity
+                'sms_on_dx3': True,          # New DXCC on band
+                'sms_on_new_grid': False,    # New grid (can be chatty)
             }
             self.save_config()
     
@@ -468,7 +484,11 @@ class CoPilotApp:
         self.gps_logger_tab = self.create_gps_logger_tab(notebook)
         notebook.add(self.gps_logger_tab, text="GPS Logger")
         
-        # Tab 9: Settings
+        # Tab 9: SMS Notifications
+        self.notify_tab = self.create_notify_tab(notebook)
+        notebook.add(self.notify_tab, text="Notify")
+
+        # Tab 10: Settings
         self.settings_tab = self.create_settings_tab(notebook)
         notebook.add(self.settings_tab, text="Settings")
         
@@ -563,6 +583,517 @@ class CoPilotApp:
         self.ignored_stations.clear()
         self.add_alert(f"Cleared {count} ignored station(s)")
     
+    # ==================== SMS Notify Tab ====================
+
+    def create_notify_tab(self, parent):
+        """Create SMS notifications tab for Twilio alerts and rover status messages"""
+        outer_frame = ttk.Frame(parent)
+
+        # Scrollable canvas
+        canvas = tk.Canvas(outer_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer_frame, orient=tk.VERTICAL, command=canvas.yview)
+        frame = ttk.Frame(canvas)
+
+        frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Bind mouse wheel for scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel, add='+')
+
+        # === Twilio Setup ===
+        twilio_frame = ttk.LabelFrame(frame, text="Twilio Setup", padding=10)
+        twilio_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(twilio_frame, text="Get credentials from twilio.com/console. Uses Twilio REST API for SMS.",
+                 foreground="gray").grid(row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 5))
+
+        ttk.Label(twilio_frame, text="Account SID:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.twilio_sid_var = tk.StringVar(value=self.config.get('twilio_account_sid', ''))
+        ttk.Entry(twilio_frame, textvariable=self.twilio_sid_var, width=45).grid(row=1, column=1, sticky=tk.W, pady=2, padx=5)
+
+        ttk.Label(twilio_frame, text="Auth Token:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.twilio_token_var = tk.StringVar(value=self.config.get('twilio_auth_token', ''))
+        ttk.Entry(twilio_frame, textvariable=self.twilio_token_var, width=45, show='*').grid(row=2, column=1, sticky=tk.W, pady=2, padx=5)
+
+        ttk.Label(twilio_frame, text="From Number:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.twilio_from_var = tk.StringVar(value=self.config.get('twilio_from_number', ''))
+        ttk.Entry(twilio_frame, textvariable=self.twilio_from_var, width=20).grid(row=3, column=1, sticky=tk.W, pady=2, padx=5)
+        ttk.Label(twilio_frame, text="Your Twilio phone number (+1...)", foreground="gray").grid(row=3, column=2, sticky=tk.W)
+
+        ttk.Label(twilio_frame, text="To Number:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.twilio_to_var = tk.StringVar(value=self.config.get('twilio_to_number', ''))
+        ttk.Entry(twilio_frame, textvariable=self.twilio_to_var, width=20).grid(row=4, column=1, sticky=tk.W, pady=2, padx=5)
+        ttk.Label(twilio_frame, text="Your cell phone number (+1...)", foreground="gray").grid(row=4, column=2, sticky=tk.W)
+
+        btn_frame = ttk.Frame(twilio_frame)
+        btn_frame.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
+        ttk.Button(btn_frame, text="Test SMS", command=self._test_sms).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Save Settings", command=self._save_sms_settings).pack(side=tk.LEFT)
+
+        # === SMS Alert Triggers ===
+        alerts_frame = ttk.LabelFrame(frame, text="Automatic SMS Alert Triggers", padding=10)
+        alerts_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.sms_enabled_var = tk.BooleanVar(value=self.config.get('sms_enabled', False))
+        ttk.Checkbutton(alerts_frame, text="Enable SMS Notifications (master toggle)",
+                        variable=self.sms_enabled_var).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=2)
+
+        ttk.Label(alerts_frame, text="Send SMS when these events occur (Daily DX / HF mode):",
+                 foreground="gray").grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(5, 2))
+
+        self.sms_priority_var = tk.BooleanVar(value=self.config.get('sms_on_priority', True))
+        ttk.Checkbutton(alerts_frame, text="Priority Stations (DX!)",
+                        variable=self.sms_priority_var).grid(row=2, column=0, sticky=tk.W, padx=(20, 0), pady=1)
+
+        self.sms_dx2_var = tk.BooleanVar(value=self.config.get('sms_on_dx2', True))
+        ttk.Checkbutton(alerts_frame, text="New DXCC Entity (DX2)",
+                        variable=self.sms_dx2_var).grid(row=3, column=0, sticky=tk.W, padx=(20, 0), pady=1)
+
+        self.sms_dx3_var = tk.BooleanVar(value=self.config.get('sms_on_dx3', True))
+        ttk.Checkbutton(alerts_frame, text="New DXCC on Band (DX3)",
+                        variable=self.sms_dx3_var).grid(row=4, column=0, sticky=tk.W, padx=(20, 0), pady=1)
+
+        self.sms_new_grid_var = tk.BooleanVar(value=self.config.get('sms_on_new_grid', False))
+        ttk.Checkbutton(alerts_frame, text="New Grid",
+                        variable=self.sms_new_grid_var).grid(row=5, column=0, sticky=tk.W, padx=(20, 0), pady=1)
+
+        # === Rover Status Messages ===
+        rover_frame = ttk.LabelFrame(frame, text="Rover Status Messages", padding=10)
+        rover_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(rover_frame, text="Click a template to fill, edit if needed, then press Send:",
+                 foreground="gray").grid(row=0, column=0, columnspan=4, sticky=tk.W, pady=(0, 5))
+
+        # Template buttons - row 1
+        tmpl_row1 = ttk.Frame(rover_frame)
+        tmpl_row1.grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=2)
+        ttk.Button(tmpl_row1, text="Grid Entry",
+                   command=lambda: self._fill_sms_template('grid_entry')).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(tmpl_row1, text="Hilltop",
+                   command=lambda: self._fill_sms_template('hilltop')).pack(side=tk.LEFT, padx=5)
+        ttk.Button(tmpl_row1, text="Departing",
+                   command=lambda: self._fill_sms_template('departing')).pack(side=tk.LEFT, padx=5)
+
+        # Template buttons - row 2
+        tmpl_row2 = ttk.Frame(rover_frame)
+        tmpl_row2.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=2)
+        ttk.Button(tmpl_row2, text="QRT/Break",
+                   command=lambda: self._fill_sms_template('qrt')).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(tmpl_row2, text="Band Change",
+                   command=lambda: self._fill_sms_template('band_change')).pack(side=tk.LEFT, padx=5)
+
+        # Editable message field
+        ttk.Label(rover_frame, text="Message:").grid(row=3, column=0, sticky=tk.W, pady=(10, 2))
+        self.sms_message_var = tk.StringVar()
+        sms_entry = ttk.Entry(rover_frame, textvariable=self.sms_message_var, width=70)
+        sms_entry.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=2, padx=(0, 5))
+
+        send_btns = ttk.Frame(rover_frame)
+        send_btns.grid(row=5, column=0, columnspan=4, sticky=tk.W, pady=(5, 2))
+        self._sms_broadcast_btn = ttk.Button(send_btns, text="Send SMS (0)",
+                                              command=lambda: self._send_rover_sms())
+        self._sms_broadcast_btn.pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(send_btns, text="Send Slack",
+                   command=lambda: self._send_rover_slack()).pack(side=tk.LEFT, padx=5)
+        self._aprs_send_btn = ttk.Button(send_btns, text="Send APRS (0)",
+                                          command=lambda: self._send_rover_aprs())
+        self._aprs_send_btn.pack(side=tk.LEFT, padx=5)
+
+        rover_frame.columnconfigure(0, weight=1)
+
+        # === SMS Subscriber List ===
+        sub_frame = ttk.LabelFrame(frame, text="SMS Subscriber List (Rover Broadcasts)", padding=10)
+        sub_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(sub_frame, text="One per line: +15551234567 W1AW  (phone number + optional callsign). "
+                  "Paste from Google Sheets.",
+                 foreground="gray").pack(anchor=tk.W, pady=(0, 5))
+
+        sub_text_frame = ttk.Frame(sub_frame)
+        sub_text_frame.pack(fill=tk.X)
+
+        self.sms_subscribers_text = tk.Text(sub_text_frame, height=6, wrap=tk.WORD,
+                                             font=('Consolas', 9))
+        sub_scroll = ttk.Scrollbar(sub_text_frame, orient=tk.VERTICAL,
+                                    command=self.sms_subscribers_text.yview)
+        self.sms_subscribers_text.configure(yscrollcommand=sub_scroll.set)
+        self.sms_subscribers_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        sub_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Load saved subscribers
+        saved_subs = self.config.get('sms_subscribers', '')
+        if saved_subs:
+            self.sms_subscribers_text.insert('1.0', saved_subs)
+
+        sub_btn_frame = ttk.Frame(sub_frame)
+        sub_btn_frame.pack(anchor=tk.W, pady=(5, 0))
+
+        self._sub_count_label = ttk.Label(sub_btn_frame, text="0 subscribers")
+        self._sub_count_label.pack(side=tk.LEFT, padx=(0, 10))
+        self._update_subscriber_count()
+
+        # Update count when text changes
+        self.sms_subscribers_text.bind('<<Modified>>', lambda e: self._on_subscribers_modified())
+        self.sms_subscribers_text.bind('<KeyRelease>', lambda e: self._update_subscriber_count())
+
+        # === Message Log ===
+        log_frame = ttk.LabelFrame(frame, text="Notification Log", padding=5)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.sms_log_text = tk.Text(log_frame, height=10, wrap=tk.WORD, state=tk.DISABLED,
+                                     font=('Consolas', 9))
+        sms_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.sms_log_text.yview)
+        self.sms_log_text.configure(yscrollcommand=sms_scroll.set)
+
+        self.sms_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sms_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Rate limiting state
+        self._sms_last_send_time = 0
+
+        return outer_frame
+
+    def _fill_sms_template(self, key):
+        """Fill the SMS message field with a rover status template"""
+        my_call = self.config.get('aprs_callsign', self.config.get('my_call', 'N5ZY'))
+        my_grid = self.current_grid if self.current_grid and self.current_grid != '----' else '[grid]'
+        active = self.config.get('active_bands', [])
+        bands = '/'.join(active) if active else '[bands]'
+
+        templates = {
+            'grid_entry':  f"{my_call} Just crossed into {my_grid}! QRV {bands}",
+            'hilltop':     f"{my_call} at {my_grid} hilltop",
+            'departing':   f"{my_call} departing {my_grid} for next location",
+            'qrt':         f"{my_call} QRT for [meal/rest]. Back QRV at [time] in [grid]",
+            'band_change': f"{my_call} band change: now QRV {bands} in {my_grid}",
+        }
+
+        msg = templates.get(key, '')
+        self.sms_message_var.set(msg)
+
+    def _parse_subscribers(self):
+        """Parse subscriber list from text widget. Returns list of (phone, name) tuples."""
+        if not hasattr(self, 'sms_subscribers_text'):
+            return []
+        text = self.sms_subscribers_text.get('1.0', tk.END).strip()
+        subscribers = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            # Handle tab-separated (from Google Sheets paste) or space-separated
+            parts = line.replace('\t', ' ').split(None, 1)
+            if parts and parts[0].startswith('+'):
+                phone = parts[0]
+                name = parts[1] if len(parts) > 1 else ''
+                subscribers.append((phone, name))
+        return subscribers
+
+    def _update_subscriber_count(self):
+        """Update the subscriber count label and Send SMS button"""
+        subs = self._parse_subscribers()
+        count = len(subs)
+        if hasattr(self, '_sub_count_label'):
+            self._sub_count_label.config(text=f"{count} subscriber{'s' if count != 1 else ''}")
+        if hasattr(self, '_sms_broadcast_btn'):
+            self._sms_broadcast_btn.config(text=f"Send SMS ({count})")
+
+    def _on_subscribers_modified(self):
+        """Handle subscriber text modification"""
+        if hasattr(self, 'sms_subscribers_text'):
+            self.sms_subscribers_text.edit_modified(False)
+        self._update_subscriber_count()
+
+    def _send_rover_sms(self):
+        """Send rover status message via SMS to all subscribers"""
+        import threading
+
+        message = self.sms_message_var.get().strip()
+        if not message:
+            return
+
+        subscribers = self._parse_subscribers()
+        if not subscribers:
+            self._log_sms("SMS: No subscribers configured")
+            return
+
+        sid = self.config.get('twilio_account_sid', '').strip()
+        token = self.config.get('twilio_auth_token', '').strip()
+        from_num = self.config.get('twilio_from_number', '').strip()
+
+        if not all([sid, token, from_num]):
+            self._log_sms("SMS error: Twilio credentials not configured")
+            return
+
+        def _broadcast():
+            import urllib.request
+            import urllib.parse
+            import base64
+
+            sent = 0
+            failed = 0
+            url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+            auth_str = base64.b64encode(f"{sid}:{token}".encode()).decode()
+
+            for phone, name in subscribers:
+                try:
+                    post_data = urllib.parse.urlencode({
+                        'From': from_num,
+                        'To': phone,
+                        'Body': message
+                    }).encode('utf-8')
+
+                    req = urllib.request.Request(
+                        url,
+                        data=post_data,
+                        headers={
+                            'Authorization': f'Basic {auth_str}',
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        method='POST'
+                    )
+
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        if response.status == 201:
+                            sent += 1
+                        else:
+                            failed += 1
+                except Exception as e:
+                    failed += 1
+                    display = name or phone
+                    print(f"SMS: Error sending to {display}: {e}")
+
+            total = len(subscribers)
+            result = f"SMS broadcast: {sent}/{total} sent"
+            if failed:
+                result += f" ({failed} failed)"
+            result += f": {message}"
+            self.root.after(0, self._log_sms, result)
+
+        threading.Thread(target=_broadcast, daemon=True).start()
+        self._log_sms(f"SMS broadcasting to {len(subscribers)} subscribers...")
+
+    def _send_rover_slack(self):
+        """Send the rover status message to Slack"""
+        message = self.sms_message_var.get().strip()
+        if not message:
+            return
+        if not self.config.get('slack_enabled', False):
+            self._log_sms("Slack disabled - not sent")
+            return
+        self.post_to_slack(message)
+        self._log_sms(f"Slack sent: {message}")
+
+    def _count_nearby_aprs(self):
+        """Count APRS stations seen within the last 30 minutes"""
+        import time as _time
+        cutoff = _time.time() - 1800  # 30 minutes
+        return sum(1 for _, _, ts in self.nearby_aprs_stations.values() if ts > cutoff)
+
+    def _send_rover_aprs(self):
+        """Send rover status message via APRS to all nearby stations"""
+        import time as _time
+
+        message = self.sms_message_var.get().strip()
+        if not message:
+            return
+
+        if not hasattr(self, 'aprs_client') or not self.aprs_client:
+            self._log_sms("APRS not connected - not sent")
+            return
+
+        # APRS messages are limited to 67 characters
+        if len(message) > 67:
+            message = message[:67]
+
+        # Get stations seen in last 30 minutes
+        cutoff = _time.time() - 1800
+        recipients = []
+        expired = []
+        for call, (dist, bearing, ts) in self.nearby_aprs_stations.items():
+            if ts > cutoff:
+                recipients.append((call, dist, bearing))
+            else:
+                expired.append(call)
+
+        # Clean up expired entries
+        for call in expired:
+            del self.nearby_aprs_stations[call]
+
+        if not recipients:
+            self._log_sms("APRS: No nearby stations in last 30 min")
+            return
+
+        # Send to each recipient
+        sent = 0
+        for call, dist, bearing in recipients:
+            try:
+                if self.aprs_client.send_message(call, message):
+                    sent += 1
+            except Exception as e:
+                print(f"APRS: Error sending to {call}: {e}")
+
+        self._log_sms(f"APRS sent to {sent}/{len(recipients)} nearby: {message}")
+
+        # Update button count
+        count = self._count_nearby_aprs()
+        self._aprs_send_btn.config(text=f"Send APRS ({count})")
+
+    def send_sms(self, message):
+        """Send an SMS via Twilio REST API (background thread)"""
+        import threading
+
+        if not message or not message.strip():
+            return
+
+        if not self.config.get('sms_enabled', False):
+            self._log_sms(f"SMS disabled - not sent: {message}")
+            return
+
+        sid = self.config.get('twilio_account_sid', '').strip()
+        token = self.config.get('twilio_auth_token', '').strip()
+        from_num = self.config.get('twilio_from_number', '').strip()
+        to_num = self.config.get('twilio_to_number', '').strip()
+
+        if not all([sid, token, from_num, to_num]):
+            self._log_sms("SMS error: Twilio credentials not configured")
+            return
+
+        # Rate limit: 10 seconds between automatic sends
+        import time
+        now = time.time()
+        if now - self._sms_last_send_time < 10:
+            self._log_sms(f"SMS rate limited - skipped: {message}")
+            return
+        self._sms_last_send_time = now
+
+        def _send():
+            import urllib.request
+            import urllib.parse
+            import base64
+
+            try:
+                url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+                post_data = urllib.parse.urlencode({
+                    'From': from_num,
+                    'To': to_num,
+                    'Body': message.strip()
+                }).encode('utf-8')
+
+                auth_str = base64.b64encode(f"{sid}:{token}".encode()).decode()
+                req = urllib.request.Request(
+                    url,
+                    data=post_data,
+                    headers={
+                        'Authorization': f'Basic {auth_str}',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    method='POST'
+                )
+
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    if response.status == 201:
+                        self.root.after(0, self._log_sms, f"SMS sent: {message}")
+                        print(f"SMS: Sent to {to_num}")
+                    else:
+                        self.root.after(0, self._log_sms,
+                                        f"SMS error: HTTP {response.status}")
+            except Exception as e:
+                error_msg = str(e)[:80]
+                self.root.after(0, self._log_sms, f"SMS error: {error_msg}")
+                print(f"SMS: Error sending: {e}")
+
+        threading.Thread(target=_send, daemon=True).start()
+
+    def _log_sms(self, message):
+        """Add a timestamped entry to the SMS message log"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        formatted = f"[{timestamp}] {message}\n"
+
+        if hasattr(self, 'sms_log_text'):
+            self.sms_log_text.config(state=tk.NORMAL)
+            self.sms_log_text.insert(tk.END, formatted)
+            self.sms_log_text.see(tk.END)
+            self.sms_log_text.config(state=tk.DISABLED)
+
+    def _test_sms(self):
+        """Send a test SMS using current UI field values"""
+        import urllib.request
+        import urllib.parse
+        import base64
+
+        sid = self.twilio_sid_var.get().strip()
+        token = self.twilio_token_var.get().strip()
+        from_num = self.twilio_from_var.get().strip()
+        to_num = self.twilio_to_var.get().strip()
+
+        if not all([sid, token, from_num, to_num]):
+            messagebox.showwarning("SMS Test", "Please fill in all Twilio fields first.")
+            return
+
+        my_call = self.config.get('my_call', '') or 'Unknown'
+        test_body = f"Test from {my_call} Co-Pilot - SMS integration working!"
+
+        try:
+            url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+            post_data = urllib.parse.urlencode({
+                'From': from_num,
+                'To': to_num,
+                'Body': test_body
+            }).encode('utf-8')
+
+            auth_str = base64.b64encode(f"{sid}:{token}".encode()).decode()
+            req = urllib.request.Request(
+                url,
+                data=post_data,
+                headers={
+                    'Authorization': f'Basic {auth_str}',
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=15) as response:
+                if response.status == 201:
+                    self._log_sms(f"Test SMS sent to {to_num}")
+                    self.add_alert(f"SMS: Test sent successfully to {to_num}")
+                    messagebox.showinfo("SMS Test", "Test SMS sent successfully!")
+                else:
+                    self._log_sms(f"Test failed: HTTP {response.status}")
+                    messagebox.showwarning("SMS Test", f"Twilio returned HTTP {response.status}")
+
+        except Exception as e:
+            error_msg = str(e)[:100]
+            self._log_sms(f"Test failed: {error_msg}")
+            self.add_alert(f"SMS: Test failed - {error_msg}")
+            messagebox.showerror("SMS Test", f"Error: {error_msg}")
+
+    def _save_sms_settings(self):
+        """Save SMS/Twilio settings from Notify tab to config"""
+        self.config['sms_enabled'] = self.sms_enabled_var.get()
+        self.config['twilio_account_sid'] = self.twilio_sid_var.get().strip()
+        self.config['twilio_auth_token'] = self.twilio_token_var.get().strip()
+        self.config['twilio_from_number'] = self.twilio_from_var.get().strip()
+        self.config['twilio_to_number'] = self.twilio_to_var.get().strip()
+        self.config['sms_on_priority'] = self.sms_priority_var.get()
+        self.config['sms_on_dx2'] = self.sms_dx2_var.get()
+        self.config['sms_on_dx3'] = self.sms_dx3_var.get()
+        self.config['sms_on_new_grid'] = self.sms_new_grid_var.get()
+        # Save subscriber list
+        if hasattr(self, 'sms_subscribers_text'):
+            self.config['sms_subscribers'] = self.sms_subscribers_text.get('1.0', tk.END).strip()
+        self.save_config()
+        subs = self._parse_subscribers()
+        self._log_sms(f"Settings saved ({len(subs)} subscribers)")
+        self.add_alert("SMS: Settings saved")
+
     def create_settings_tab(self, parent):
         """Create settings configuration tab with scrollbar"""
         # Create outer frame
@@ -857,7 +1388,8 @@ class CoPilotApp:
             ("grid_change",   "Grid Change",            "Grid enter/initial announcements"),
             ("county_change", "County Change",          "QSO Party county changes"),
             ("grid_boundary", "Grid Boundary",          "Proximity alerts (5mi, 2mi, 1mi...)"),
-            ("new_decode",    "New Grid / Calling Me",  "WSJT-X decode alerts"),
+            ("new_grid",      "New Grid",               "New grid decoded in WSJT-X"),
+            ("calling_me",    "Calling Me",             "Station calling your callsign"),
             ("priority_dx",   "Priority DX Station",    "DX!/AP! priority station alerts"),
             ("psk_alert",     "PSK Band Activity",      "PSK Reporter band opening alerts"),
             ("aprs_message",  "APRS Messages",          "Incoming APRS messages"),
@@ -5818,9 +6350,20 @@ class CoPilotApp:
     
     def on_aprs_nearby_station(self, callsign, lat, lon, distance_mi, bearing, symbol_desc):
         """Called when a mobile APRS station is detected nearby"""
+        import time as _time
         msg = f"APRS: {callsign} ({symbol_desc}) {distance_mi:.1f} mi {bearing}"
         self.add_alert(msg, priority=True)
         self.voice.announce(f"APRS station {callsign}, {distance_mi:.0f} miles {bearing}", category="aprs_nearby")
+
+        # Track for rover broadcast list (aged out after 30 min)
+        self.nearby_aprs_stations[callsign.split('-')[0].upper()] = (
+            distance_mi, bearing, _time.time()
+        )
+        # Update button label if Notify tab exists
+        if hasattr(self, '_aprs_send_btn'):
+            count = self._count_nearby_aprs()
+            self.root.after(0, lambda: self._aprs_send_btn.config(
+                text=f"Send APRS ({count})"))
     
     def on_aprs_message(self, from_call, message, msgno):
         """Called when an APRS message is received"""
@@ -5863,12 +6406,15 @@ class CoPilotApp:
         if is_new_grid:
             msg = f"New grid {grid} on {band} from {callsign}"
             self.add_alert(msg, priority=True, callsign=callsign)
-            self.voice.announce(f"New grid {grid} on {band}", category="new_decode")
-        
+            self.voice.announce(f"New grid {grid} on {band}", category="new_grid")
+            # SMS notification for new grid
+            if self.config.get('sms_on_new_grid', False):
+                self.send_sms(msg)
+
         if is_calling_me:
             msg = f"{callsign} calling you on {band}"
             self.add_alert(msg, priority=True, callsign=callsign)
-            self.voice.announce(f"{callsign} calling on {band}", category="new_decode")
+            self.voice.announce(f"{callsign} calling on {band}", category="calling_me")
 
     def on_priority_decode(self, band, callsign, freq_mhz):
         """Called when a priority station is decoded in ALL.TXT"""
@@ -5913,11 +6459,26 @@ class CoPilotApp:
             }
             self._insert_priority_spot(time_str, priority_result.code, priority_result.tag,
                                        spot_data, '')
+
+            # SMS notification based on priority code
+            code = priority_result.code  # 'DX!', 'DX2', 'DX3'
+            sms_send = False
+            if code == 'DX!' and self.config.get('sms_on_priority', False):
+                sms_send = True
+            elif code == 'DX2' and self.config.get('sms_on_dx2', False):
+                sms_send = True
+            elif code == 'DX3' and self.config.get('sms_on_dx3', False):
+                sms_send = True
+            if sms_send:
+                self.send_sms(msg)
         else:
             # Fallback: legacy DX! behavior
             msg = f"DX! {callsign} decoded on {band}"
             self.add_alert(msg, priority=True, callsign=callsign)
             self._priority_voice_alert(callsign, band)
+            # SMS for legacy DX! fallback
+            if self.config.get('sms_on_priority', False):
+                self.send_sms(msg)
 
     def _priority_voice_alert(self, callsign, band, voice_msg=None):
         """Fire voice alert for priority station if not recently voiced (shared across sources)"""
@@ -6481,21 +7042,30 @@ class CoPilotApp:
                         "Opening GPS port..."))
                     self._intermittent_port_closed = False
                     self.root.after(0, self._reconnect_gps_internal)
-                    # Wait up to 15s for a valid GPS fix
+                    # Wait up to 15s for a FRESH GPS fix (must have recent GPRMC)
                     for _ in range(30):
                         time.sleep(0.5)
                         if (monitor.gps_fix_quality >= 1
-                                and monitor.gps_datetime_utc is not None):
+                                and monitor.gps_datetime_utc is not None
+                                and monitor._gps_datetime_monotonic > 0
+                                and (time.monotonic() - monitor._gps_datetime_monotonic) < 5.0):
                             break
                     else:
                         result = {'success': False,
-                                  'error': 'Timeout waiting for GPS fix'}
+                                  'error': 'Timeout waiting for fresh GPS fix'}
                         return
 
                 # Need fix to sync
                 if monitor.gps_fix_quality < 1 or monitor.gps_datetime_utc is None:
                     result = {'success': False,
                               'error': 'No GPS fix — waiting for next cycle'}
+                    return
+
+                # Verify GPS data is fresh before syncing
+                gps_age = time.monotonic() - monitor._gps_datetime_monotonic
+                if monitor._gps_datetime_monotonic == 0 or gps_age > 30.0:
+                    result = {'success': False,
+                              'error': f'GPS time data is stale ({gps_age:.0f}s old)'}
                     return
 
                 result = monitor.sync_system_clock()
@@ -6549,6 +7119,9 @@ class CoPilotApp:
             error = result.get('error', 'Unknown error')
             self.gps_sync_status_var.set(f"Sync failed: {error}")
             print(f"GPS Time Sync: Failed — {error}")
+            # Show safety-blocked syncs in Alerts tab so user can see
+            if 'safety limit' in error or 'stale' in error.lower():
+                self.add_alert(f"⚠ GPS Time Sync BLOCKED: {error}")
 
     def _log_time_sync(self, result):
         """Append sync event to the time sync log file."""
@@ -6874,6 +7447,20 @@ class CoPilotApp:
         self.config['lotw_auto_refresh'] = self.lotw_auto_refresh_var.get()
         # Keep legacy key in sync for backward compat
         self.config['psk_priority_stations'] = self.config['dx_priority_stations']
+
+        # SMS/Twilio settings (also saved by Notify tab's own Save button)
+        if hasattr(self, 'sms_enabled_var'):
+            self.config['sms_enabled'] = self.sms_enabled_var.get()
+            self.config['twilio_account_sid'] = self.twilio_sid_var.get().strip()
+            self.config['twilio_auth_token'] = self.twilio_token_var.get().strip()
+            self.config['twilio_from_number'] = self.twilio_from_var.get().strip()
+            self.config['twilio_to_number'] = self.twilio_to_var.get().strip()
+            self.config['sms_on_priority'] = self.sms_priority_var.get()
+            self.config['sms_on_dx2'] = self.sms_dx2_var.get()
+            self.config['sms_on_dx3'] = self.sms_dx3_var.get()
+            self.config['sms_on_new_grid'] = self.sms_new_grid_var.get()
+            if hasattr(self, 'sms_subscribers_text'):
+                self.config['sms_subscribers'] = self.sms_subscribers_text.get('1.0', tk.END).strip()
 
         # Slack settings
         self.config['slack_enabled'] = self.slack_enabled_var.get()
