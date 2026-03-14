@@ -90,6 +90,7 @@ class CoPilotApp:
         
         # SMS rate limiting
         self._sms_last_send_time = 0
+        self._sms_station_cooldowns = {}  # {callsign: last_send_time} for per-station 5-min cooldown
 
         # APRS nearby stations for rover broadcasts: {callsign: (distance_mi, bearing, timestamp)}
         self.nearby_aprs_stations = {}
@@ -951,8 +952,12 @@ class CoPilotApp:
         count = self._count_nearby_aprs()
         self._aprs_send_btn.config(text=f"Send APRS ({count})")
 
-    def send_sms(self, message):
-        """Send an SMS via Twilio REST API (background thread)"""
+    def send_sms(self, message, callsign=None):
+        """Send an SMS via Twilio REST API (background thread).
+
+        callsign: optional — if provided, enforces a per-station 5-minute cooldown
+                  (prevents flooding when a priority station is active on FT8).
+        """
         import threading
 
         if not message or not message.strip():
@@ -971,9 +976,18 @@ class CoPilotApp:
             self._log_sms("SMS error: Twilio credentials not configured")
             return
 
-        # Rate limit: 10 seconds between automatic sends
         import time
         now = time.time()
+
+        # Per-station cooldown: 5 minutes between SMS for the same callsign
+        if callsign:
+            last = self._sms_station_cooldowns.get(callsign.upper(), 0)
+            if now - last < 300:
+                self._log_sms(f"SMS cooldown ({callsign}) - skipped: {message}")
+                return
+            self._sms_station_cooldowns[callsign.upper()] = now
+
+        # Global rate limit: 10 seconds minimum between any SMS
         if now - self._sms_last_send_time < 10:
             self._log_sms(f"SMS rate limited - skipped: {message}")
             return
@@ -6424,8 +6438,12 @@ class CoPilotApp:
             self.add_alert(msg, priority=True, callsign=callsign)
             self.voice.announce(f"{callsign} calling on {band}", category="calling_me")
 
-    def on_priority_decode(self, band, callsign, freq_mhz):
-        """Called when a priority station is decoded in ALL.TXT"""
+    def on_priority_decode(self, band, callsign, freq_mhz, is_transmitting=True):
+        """Called when a priority station is decoded in ALL.TXT.
+
+        is_transmitting: True if WE heard the priority station transmit,
+                         False if we heard someone else call them.
+        """
         if not self.config.get('psk_priority_enabled', False):
             return
 
@@ -6438,11 +6456,17 @@ class CoPilotApp:
             priority_result = self.priority_engine.check(callsign, band, '')
 
         if priority_result:
-            msg = f"{priority_result.code} {callsign} decoded on {band}"
+            if is_transmitting:
+                msg = f"{priority_result.code} {callsign} decoded on {band}"
+            else:
+                msg = f"{priority_result.code} {callsign} called on {band} (not heard directly)"
             if priority_result.entity_name:
                 msg += f" ({priority_result.entity_name})"
             self.add_alert(msg, priority=True, callsign=callsign)
-            self._priority_voice_alert(callsign, band, voice_msg=priority_result.voice_msg)
+
+            # Only voice alert when hearing the station directly
+            if is_transmitting:
+                self._priority_voice_alert(callsign, band, voice_msg=priority_result.voice_msg)
 
             # Insert into Priority pane
             # For ALL.TXT decodes: Nearby=our call, QSO Dist/Prop=blank
@@ -6468,25 +6492,30 @@ class CoPilotApp:
             self._insert_priority_spot(time_str, priority_result.code, priority_result.tag,
                                        spot_data, '')
 
-            # SMS notification based on priority code
-            code = priority_result.code  # 'DX!', 'DX2', 'DX3'
-            sms_send = False
-            if code == 'DX!' and self.config.get('sms_on_priority', False):
-                sms_send = True
-            elif code == 'DX2' and self.config.get('sms_on_dx2', False):
-                sms_send = True
-            elif code == 'DX3' and self.config.get('sms_on_dx3', False):
-                sms_send = True
-            if sms_send:
-                self.send_sms(msg)
+            # SMS notification — only when hearing the station directly transmit
+            if is_transmitting:
+                code = priority_result.code  # 'DX!', 'DX2', 'DX3'
+                sms_send = False
+                if code == 'DX!' and self.config.get('sms_on_priority', False):
+                    sms_send = True
+                elif code == 'DX2' and self.config.get('sms_on_dx2', False):
+                    sms_send = True
+                elif code == 'DX3' and self.config.get('sms_on_dx3', False):
+                    sms_send = True
+                if sms_send:
+                    self.send_sms(msg, callsign=callsign)
         else:
             # Fallback: legacy DX! behavior
-            msg = f"DX! {callsign} decoded on {band}"
+            if is_transmitting:
+                msg = f"DX! {callsign} decoded on {band}"
+            else:
+                msg = f"DX! {callsign} called on {band} (not heard directly)"
             self.add_alert(msg, priority=True, callsign=callsign)
-            self._priority_voice_alert(callsign, band)
-            # SMS for legacy DX! fallback
-            if self.config.get('sms_on_priority', False):
-                self.send_sms(msg)
+            if is_transmitting:
+                self._priority_voice_alert(callsign, band)
+                # SMS for legacy DX! fallback
+                if self.config.get('sms_on_priority', False):
+                    self.send_sms(msg, callsign=callsign)
 
     def _priority_voice_alert(self, callsign, band, voice_msg=None):
         """Fire voice alert for priority station if not recently voiced (shared across sources)"""

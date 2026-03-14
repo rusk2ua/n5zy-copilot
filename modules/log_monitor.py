@@ -224,14 +224,28 @@ class LogMonitor:
                 return
 
             # Check for priority station decode (fires for any decode, even without grid)
+            # FT8/FT4 message format: [TO] [FROM] [payload]
+            #   "CQ W5ABC EM12"        → W5ABC is transmitting (calling CQ)
+            #   "CQ DX W5ABC EM12"     → W5ABC is transmitting (directed CQ)
+            #   "W5ABC K3LR EM12"      → K3LR is transmitting (calling W5ABC)
+            #   "K3LR W5ABC R-15"      → W5ABC is transmitting (responding)
+            # The transmitter is always the 2nd callsign (or 1st after filtering CQ/directives)
             if self.priority_stations and self.priority_callback:
                 call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[A-Z][A-Z0-9]*[0-9][A-Z]+)\b'
-                msg_calls = re.findall(call_pattern, message, re.IGNORECASE)
+                msg_calls_raw = re.findall(call_pattern, message, re.IGNORECASE)
+                # Filter out non-callsign tokens (CQ directives, signal reports, etc.)
+                non_calls = {'CQ', 'DX', 'NA', 'EU', 'AS', 'AF', 'SA', 'OC', 'AN', 'RR73', 'RR15', 'RR99'}
+                msg_calls = [c.upper() for c in msg_calls_raw if c.upper() not in non_calls]
+                # In standard FT8 format, the transmitter is the last callsign
+                # "CQ W5ABC EM12" → after filter: ['W5ABC'] → transmitter = W5ABC
+                # "W5ABC K3LR EM12" → ['W5ABC', 'K3LR'] → transmitter = K3LR (2nd)
+                # "K3LR W5ABC R-15" → ['K3LR', 'W5ABC'] → transmitter = W5ABC (2nd)
+                transmitter = msg_calls[-1] if msg_calls else None
                 for c in msg_calls:
-                    c_upper = c.upper()
-                    if c_upper != 'N5ZY' and c_upper != 'CQ' and c_upper in self.priority_stations:
+                    if c != 'N5ZY' and c in self.priority_stations:
+                        is_transmitting = (c == transmitter)
                         band_display = self._freq_to_band(actual_freq_mhz) if actual_freq_mhz else self._extract_band_freq(band_name)
-                        self.priority_callback(band_display, c_upper, actual_freq_mhz)
+                        self.priority_callback(band_display, c, actual_freq_mhz, is_transmitting)
                         break  # One priority alert per decode line
 
             # Extract grid square (4 characters: 2 letters + 2 digits)
