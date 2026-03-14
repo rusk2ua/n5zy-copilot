@@ -1,7 +1,7 @@
 # N5ZY VHF Contest Co-Pilot
 
 ## Project Overview
-A Python/tkinter application for amateur radio VHF/UHF contest roving operations. Integrates GPS tracking, multiple WSJT-X instances, contest logging (N1MM+/N3FJP), battery monitoring, APRS messaging, and various contest aids into a single dashboard.
+A Python/tkinter application for amateur radio VHF/UHF contest roving operations. Integrates GPS tracking, multiple WSJT-X instances, contest logging (N1MM+/N3FJP/Log4OM), battery monitoring, APRS messaging, SMS notifications (Twilio), Slack webhooks, PSK Reporter, and various contest aids into a single dashboard.
 
 **Author:** Marcus, N5ZY  
 **License:** Open source for amateur radio use
@@ -14,7 +14,7 @@ python copilot.py
 ## Project Structure
 ```
 N5ZY-CoPilot/
-├── copilot.py                 # Main application (5600+ lines)
+├── copilot.py                 # Main application (7500+ lines)
 ├── config/
 │   └── settings.json          # Configuration (auto-created)
 ├── logs/
@@ -59,7 +59,10 @@ pip install victron-ble bleak  # For Victron battery monitoring
 1. **GPS callbacks**: `gps_monitor.py` calls back to `copilot.py` on position changes
 2. **APRS filtering**: Must filter own callsign (any SSID) from position alerts, but allow cross-SSID messages
 3. **Contest modes**: VHF Contest, 222 and Up, QSO Party - affects exchange fields and logging
-4. **Voice alerts**: Use `self.voice.announce()` for hands-free operation while driving
+4. **Voice alerts**: Use `self.voice.announce()` for hands-free operation while driving; categories are individually togglable (new_grid, calling_me, etc.)
+5. **GPS Time Sync safety**: `sync_system_clock()` in gps_monitor.py has three safety guards — freshness check (30s), max offset (±30s), rate limit (60s monotonic). Never bypass these.
+6. **SMS routing**: Automatic alerts (DX!/DX2/DX3/New Grid) go to personal number via `send_sms()`. Rover status broadcasts go to subscriber list via `_send_rover_sms()`. Both use Twilio REST API via `urllib.request` (no pip dependency).
+7. **ADIF modes**: FT8/FT4/Q65 are primary modes per ADIF 3.1.1+ (not MFSK submodes). Only SSB gets submode mapping (USB/LSB → SSB).
 
 ### Testing Considerations
 - GPS: Use VK172 USB dongle on Windows COM port
@@ -72,19 +75,21 @@ pip install victron-ble bleak  # For Victron battery monitoring
 - GPS Logger needs `get_full_data()` method in gps_monitor.py
 - APRS-IS echoes packets back - filter own callsign to avoid duplicates
 - APRS ack messages should be handled silently, not displayed
+- GPS Time Sync can enter feedback loop if `gps_datetime_utc` becomes stale — safety guards in `sync_system_clock()` prevent this (do not remove them)
+- Log4OM requires FT8/FT4 as primary mode (not MFSK+submode) — see `_build_adif_record()` in radio_updater.py
+- WSJT-X ALL.TXT frequency extraction must cover full HF range (1.8-30000 MHz), not just 28+ — see `log_monitor.py`
 
 ## Feature Checklist
 See `FEATURES.md` for detailed feature status and version history.
 
-## Recent Changes (Feb 2025)
-- Tab styling: bold active tab, spacing for mobile visibility
-- GPS Logger: live display every 2 seconds
-- APRS Messages: connection status updates, message filtering
-- APRS: filter own position beacons, allow cross-SSID messages, filter acks
-- Removed: fips_counties.py (replaced by county_lookup.py + JSON mappings)
+## Recent Changes (Mar 2025)
+- **v1.9.0**: SMS Notify tab (Twilio SMS, Slack, APRS nearby broadcast), GPS time sync safety guards, voice alert category split
+- **v1.8.58**: Fix hardcoded band in New Grid alerts, fix FSQCALL mode in Log4OM
+- **v1.8.57**: GPS baud/update rate control, GPS time sync, voice category filtering, PSK Entity column
+- **v1.8.56**: Priority Station Alerts (DX!/DX2/DX3), PSK Monitor redesign, Log4OM integration, DXCC lookup
 
 ## Hardware Setup
-- **GPS**: VK172 USB dongle (9600 baud NMEA)
+- **GPS**: VK172 USB dongle (9600 baud NMEA, configurable baud/update rate)
 - **Battery**: Victron SmartShunt via BLE
 - **Radios**: IC-9700, IC-7610, IC-7300 with WSJT-X
 - **Vehicle**: Kia Niro EV (affects route planning for charging)
