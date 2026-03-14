@@ -44,7 +44,7 @@ N5ZY-CoPilot/
 
 ## Key Dependencies
 ```bash
-pip install pyserial pynmea2 pyttsx3 requests beautifulsoup4 aprslib
+pip install pyserial pynmea2 pyttsx3
 pip install cryptography        # For credential encryption in settings.json
 pip install victron-ble bleak   # For Victron battery monitoring
 ```

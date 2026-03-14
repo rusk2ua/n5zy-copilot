@@ -14,13 +14,6 @@ pyttsx3>=2.90
 pyshp>=2.3
 shapely>=2.0
 
-# Web / API Support
-requests>=2.28
-beautifulsoup4>=4.11
-
-# APRS-IS Client
-aprslib>=0.7.0
-
 # Credential Encryption (optional but recommended)
 cryptography>=41.0
 
