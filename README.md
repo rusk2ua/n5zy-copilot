@@ -7,12 +7,16 @@ A Python/tkinter dashboard for amateur radio VHF/UHF contest roving. Integrates 
 ## Features
 
 - **GPS Tracking** - VK172 USB dongle, automatic grid square and county detection, grid boundary proximity alerts
+- **GPS Time Sync** - Set system clock from GPS with safety guards (freshness check, offset limit, rate limiting)
 - **Multi-Radio WSJT-X** - Monitor up to 4 WSJT-X instances simultaneously via UDP, updates 'My Grid' automatically through AutoGrid
-- **Contest Logging** - N1MM+ (TCP/RoverQTH) and N3FJP integration with ADIF output
+- **Contest Logging** - N1MM+ (TCP/RoverQTH), N3FJP, and Log4OM integration with ADIF output
+- **SMS Notifications** - Twilio SMS alerts for DX/New Grid, rover status broadcasts to subscriber list
 - **APRS** - APRS-IS messaging, position beaconing, nearby mobile station alerts with voice announcements
 - **PSK Reporter** - Band opening detection, Sporadic-E alerts, multi-hop Sp-E "PULL OVER!" alerts
+- **Priority Station Alerts** - DX! priority stations, new DXCC entity, new DXCC on band with LoTW/cty.dat lookup
 - **QSY Advisor** - Station database to find who's active on which bands
 - **Voice Alerts** - Hands-free announcements for grid changes, QSOs, band openings, nearby stations
+- **Slack Integration** - Webhook notifications to multiple Slack channels
 - **Battery Monitor** - Victron SmartShunt via Bluetooth LE
 - **Contest Modes** - VHF Contest, 222 and Up, QSO Party (with county auto-detection)
 - **Super Check Partial** - Callsign lookup with QRZ.com fallback

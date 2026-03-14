@@ -44,8 +44,11 @@ This file documents all working features. Use this to verify nothing gets broken
 - [x] GPS COM Port is a **dropdown/Combobox** (not text Entry)
 - [x] "Refresh Ports" button scans for available COM ports
 - [x] **"Connect" button reconnects GPS without app restart**
+- [x] **GPS Baud Rate** dropdown (auto-detect or specific baud)
+- [x] **GPS Update Rate** dropdown (1-10 Hz via UBX protocol)
 - [x] Grid Boundary Alerts checkbox toggles voice alerts
 - [x] GPS lock status shows in main status bar as a green or red ASCII large filled circle
+- [x] **GPS Time Sync** enable/disable with interval and intermittent mode controls
 
 ### Victron SmartShunt
 - [x] BLE Address field
@@ -122,7 +125,8 @@ This file documents all working features. Use this to verify nothing gets broken
 - [x] No duplicate entries (WSJT-X raw disabled)
 - [x] **No duplicate entries from CoPilot manual QSOs echoed back from N1MM+**
 - [x] WSJT-X QSOs include proper ADIF fields for MY_STATE, MY_CNTY, MY_LAT, MY_LON, MY_GRIDSQUARE for importing to a daily logger and eventual upload to LoTW
-- [x] Log activity mapped to correct ADIF Mode/submode: FT8→MFSK+FT8, Q65→MFSK+Q65, USB→SSB+USB
+- [x] **Log activity mapped to correct ADIF modes: FT8, FT4, Q65, etc. as primary modes per ADIF 3.1.1+** (fixes Log4OM FSQCALL issue)
+- [x] SSB submode mapping: USB→SSB+USB, LSB→SSB+LSB
 - [x] Daily log files: n5zy_copilot_YYYYMMDD.adi
 
 ## PSK Reporter Tab
@@ -154,6 +158,10 @@ This file documents all working features. Use this to verify nothing gets broken
 - [x] Grid boundary proximity alerts
 - [x] Battery low warnings
 - [x] **GPS lock acquired/lost announcements**
+- [x] **Individual category enable/disable toggles:**
+  - [x] New Grid (separate from Calling Me)
+  - [x] Calling Me (separate from New Grid)
+  - [x] Priority stations, band openings, QSO logged, etc.
 - [x] **PSK Monitor alerts:**
   - [x] Band openings
   - [x] Sporadic-E (Sp-E) on 2m/70cm
@@ -181,6 +189,49 @@ This file documents all working features. Use this to verify nothing gets broken
 - [x] Voice announcement with callsign, distance, bearing
 - [x] Recognizes mobile symbols (Car, Truck, Van, RV, etc.)
 - [x] Ignores infrastructure (digipeaters, weather stations)
+
+## Notify Tab (SMS/Slack/APRS Notifications)
+- [x] **Twilio SMS Integration** (no extra pip dependency — uses urllib.request)
+  - [x] Account SID, Auth Token (masked), From/To number configuration
+  - [x] Test SMS button (validates with UI fields before saving)
+  - [x] Save Settings button persists Twilio config
+- [x] **Automatic SMS Alert Triggers** (to personal number):
+  - [x] Master enable/disable toggle
+  - [x] Priority Stations (DX!) alerts
+  - [x] New DXCC Entity (DX2) alerts
+  - [x] New DXCC on Band (DX3) alerts
+  - [x] New Grid alerts
+  - [x] 10-second rate limiting between automatic SMS
+- [x] **Rover Status Messages** (broadcast to subscribers):
+  - [x] Pre-filled templates: Grid Entry, Hilltop, Departing, QRT/Break, Band Change
+  - [x] Template variables: {MyCall}, {MyGrid}, {bands} resolved from live app state
+  - [x] Editable message field
+  - [x] **Send SMS** button — broadcasts to subscriber list via Twilio (shows count)
+  - [x] **Send Slack** button — posts to configured Slack webhooks
+  - [x] **Send APRS** button — sends to all nearby APRS stations within 30 min window (shows live count)
+- [x] **SMS Subscriber List**:
+  - [x] Paste-friendly text area (Google Sheets compatible)
+  - [x] Parses +1XXXXXXXXXX phone numbers with optional callsign
+  - [x] Live subscriber count display
+  - [x] Persisted in settings.json
+- [x] **Notification Log** — timestamped log of all sent notifications
+
+## GPS Time Sync
+- [x] **Set system clock from GPS** (requires Administrator)
+- [x] Configurable sync interval (1, 2, 5, 10, 15, 30 min or Manual)
+- [x] Sync Now manual button
+- [x] **Intermittent mode** — closes GPS serial port between syncs to reduce RF noise
+  - [x] Auto-suppressed during VHF/222up/QSO Party modes
+  - [x] Auto-suppressed while GPS Logger is active
+  - [x] Auto-suppressed while vehicle is in motion (>2 mph)
+- [x] **Safety guards against feedback loops:**
+  - [x] GPS data freshness check — rejects stale timestamps (>30s old)
+  - [x] Maximum offset limit — blocks syncs with offset exceeding ±30 seconds
+  - [x] Monotonic rate limiting — minimum 60s between syncs (immune to clock changes)
+  - [x] Alerts tab warning when safety guard blocks a sync
+- [x] Optionally updates WSJT-X grid squares after sync
+- [x] GPS baud rate control (9600 default, auto-detect)
+- [x] GPS update rate control (1-10 Hz via UBX protocol)
 
 ## QSY Advisor Tab
 - [x] Station database loaded
@@ -264,6 +315,10 @@ Credits section
 
 ## Version History
 
+- **1.9.0** - SMS Notify tab (Twilio SMS, Slack, APRS nearby broadcast), GPS time sync safety guards (fixes runaway feedback loop), voice alert category split (New Grid / Calling Me separated)
+- **1.8.58** - Fix incorrect band in New Grid alerts (HF frequency range), fix FSQCALL mode in Log4OM (ADIF 3.1.1+ mode mapping)
+- **1.8.57** - GPS baud rate control, GPS update rate control (UBX), GPS time sync feature, voice alert category filtering, PSK Reporter Entity column
+- **1.8.56** - Priority Station Alerts (DX!/DX2/DX3), PSK Monitor split pane redesign, Log4OM integration, LoTW/cty.dat DXCC lookup, priority engine
 - **1.8.55** - APRS: duplicate packet filtering, cooldown logic fix
 - **1.8.54** - APRS: allow cross-SSID messages (N5ZY → N5ZY-9), filter ack/rej
 - **1.8.53** - APRS: filter own callsign from position alerts, filter echoed messages
