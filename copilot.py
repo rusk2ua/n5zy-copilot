@@ -6362,7 +6362,9 @@ class CoPilotApp:
         self.voice.announce(f"APRS station {callsign}, {distance_mi:.0f} miles {bearing}", category="aprs_nearby")
 
         # Track for rover broadcast list (aged out after 30 min)
-        self.nearby_aprs_stations[callsign.split('-')[0].upper()] = (
+        # Keep full callsign-SSID so messages go to the active node (e.g. -9 mobile),
+        # not the home station
+        self.nearby_aprs_stations[callsign.upper()] = (
             distance_mi, bearing, _time.time()
         )
         # Update button label if Notify tab exists
