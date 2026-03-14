@@ -1,10 +1,9 @@
 
-
 # GPS Support
 pyserial>=3.5
 pynmea2>=1.18.0
 
-# Victron Bluetooth Support  
+# Victron Bluetooth Support
 bleak>=0.21.0
 victron-ble>=0.5.0
 
@@ -14,6 +13,16 @@ pyttsx3>=2.90
 # County Lookup (shapefile + geometry)
 pyshp>=2.3
 shapely>=2.0
+
+# Web / API Support
+requests>=2.28
+beautifulsoup4>=4.11
+
+# APRS-IS Client
+aprslib>=0.7.0
+
+# Credential Encryption (optional but recommended)
+cryptography>=41.0
 
 # GUI (built into Python, but listed for completeness)
 # tkinter - included with Python on Windows

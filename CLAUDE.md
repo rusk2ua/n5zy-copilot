@@ -34,7 +34,8 @@ N5ZY-CoPilot/
 │   ├── grid_boundary.py       # Grid edge proximity alerts
 │   ├── psk_monitor.py         # PSK Reporter integration
 │   ├── qsoparty_parser.py     # QSO Party .sec file parser
-│   └── county_lookup.py       # GPS to county lookup (Census API)
+│   ├── county_lookup.py       # GPS to county lookup (Census API)
+│   └── credential_store.py    # Fernet encryption for sensitive config fields
 ├── tools/
 │   └── parse_public_logs.py   # 3830scores scraper (used by QSY Advisor)
 └── qsy_advisor_data/
@@ -44,7 +45,8 @@ N5ZY-CoPilot/
 ## Key Dependencies
 ```bash
 pip install pyserial pynmea2 pyttsx3 requests beautifulsoup4 aprslib
-pip install victron-ble bleak  # For Victron battery monitoring
+pip install cryptography        # For credential encryption in settings.json
+pip install victron-ble bleak   # For Victron battery monitoring
 ```
 
 ## Development Guidelines
@@ -63,6 +65,7 @@ pip install victron-ble bleak  # For Victron battery monitoring
 5. **GPS Time Sync safety**: `sync_system_clock()` in gps_monitor.py has three safety guards — freshness check (30s), max offset (±30s), rate limit (60s monotonic). Never bypass these.
 6. **SMS routing**: Automatic alerts (DX!/DX2/DX3/New Grid) go to personal number via `send_sms()`. Rover status broadcasts go to subscriber list via `_send_rover_sms()`. Both use Twilio REST API via `urllib.request` (no pip dependency).
 7. **ADIF modes**: FT8/FT4/Q65 are primary modes per ADIF 3.1.1+ (not MFSK submodes). Only SSB gets submode mapping (USB/LSB → SSB).
+8. **Credential encryption**: Sensitive config fields are Fernet-encrypted at rest (AES-128-CBC + HMAC-SHA256). Add new secret field names to `SENSITIVE_KEYS` in `modules/credential_store.py`. Key stored in user-specific dotfile outside the repo (`%APPDATA%/n5zy-copilot/.credential_key` on Windows, `~/.config/n5zy-copilot/.credential_key` on Linux/Mac).
 
 ### Testing Considerations
 - GPS: Use VK172 USB dongle on Windows COM port

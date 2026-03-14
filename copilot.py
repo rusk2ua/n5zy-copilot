@@ -13,7 +13,8 @@ import threading
 from pathlib import Path
 from datetime import datetime
 
-# Import our modules (will create these next)
+# Import our modules
+from modules.credential_store import encrypt_config, decrypt_config, needs_migration
 from modules.gps_monitor import GPSMonitor
 from modules.battery_monitor import BatteryMonitor
 from modules.radio_updater import RadioUpdater
@@ -133,7 +134,11 @@ class CoPilotApp:
         
         if self.config_file.exists():
             with open(self.config_file, 'r') as f:
-                self.config = json.load(f)
+                raw_config = json.load(f)
+            self.config = decrypt_config(raw_config)
+            # Auto-migrate plain text credentials → encrypted on first load
+            if needs_migration(raw_config):
+                self.save_config()
         else:
             # Default configuration
             self.config = {
@@ -340,9 +345,10 @@ class CoPilotApp:
         return directions[idx]
     
     def save_config(self):
-        """Save configuration to JSON file"""
+        """Save configuration to JSON file (sensitive fields encrypted on disk)"""
+        encrypted = encrypt_config(self.config)
         with open(self.config_file, 'w') as f:
-            json.dump(self.config, f, indent=2)
+            json.dump(encrypted, f, indent=2)
     
     def create_gui(self):
         """Create the main GUI"""
