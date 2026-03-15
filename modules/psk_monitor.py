@@ -212,21 +212,23 @@ class PSKMonitor:
         """Main monitoring loop"""
         # Initial delay to let app start up
         time.sleep(10)
-        
+
+        first_poll_done = False
         while self.running:
             try:
                 if self.my_lat is not None and self.my_lon is not None:
                     self._poll_psk_reporter()
+                    self.last_poll = datetime.now()
+                    first_poll_done = True
                 else:
                     print("PSK Monitor: Waiting for GPS position...")
-                
-                self.last_poll = datetime.now()
-                
+
             except Exception as e:
                 print(f"PSK Monitor: Error in monitor loop: {e}")
-            
-            # Wait for next poll (5 minutes)
-            for _ in range(self.poll_interval):
+
+            # If first poll hasn't happened yet, retry every 10s instead of 5 min
+            wait_time = self.poll_interval if first_poll_done else 10
+            for _ in range(wait_time):
                 if not self.running:
                     break
                 time.sleep(1)
