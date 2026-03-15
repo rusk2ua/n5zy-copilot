@@ -25,6 +25,7 @@ class LogMonitor:
         self.contest_mode = contest_mode
         self.priority_callback = priority_callback
         self.priority_stations = set()  # Set externally
+        self.decode_check_callback = None  # Called for every decode (DX2/DX3 dynamic checks)
         self.running = False
         self.thread = None
 
@@ -223,30 +224,35 @@ class LogMonitor:
             if message.upper().startswith('CQ N5ZY') or message.upper().startswith('N5ZY '):
                 return
 
-            # Check for priority station decode (fires for any decode, even without grid)
+            # Parse FT8/FT4 message to extract callsigns and identify transmitter
             # FT8/FT4 message format: [TO] [FROM] [payload]
             #   "CQ W5ABC EM12"        → W5ABC is transmitting (calling CQ)
             #   "CQ DX W5ABC EM12"     → W5ABC is transmitting (directed CQ)
             #   "W5ABC K3LR EM12"      → K3LR is transmitting (calling W5ABC)
             #   "K3LR W5ABC R-15"      → W5ABC is transmitting (responding)
-            # The transmitter is always the 2nd callsign (or 1st after filtering CQ/directives)
+            # The transmitter is always the last callsign (2nd, or 1st after filtering CQ/directives)
+            call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[A-Z][A-Z0-9]*[0-9][A-Z]+)\b'
+            msg_calls_raw = re.findall(call_pattern, message, re.IGNORECASE)
+            non_calls = {'CQ', 'DX', 'NA', 'EU', 'AS', 'AF', 'SA', 'OC', 'AN', 'RR73', 'RR15', 'RR99'}
+            msg_calls = [c.upper() for c in msg_calls_raw if c.upper() not in non_calls]
+            transmitter = msg_calls[-1] if msg_calls else None
+            band_display = self._freq_to_band(actual_freq_mhz) if actual_freq_mhz else self._extract_band_freq(band_name)
+
+            # Check for pre-listed priority stations (DX! expeditions)
+            dx_handled = False
             if self.priority_stations and self.priority_callback:
-                call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[A-Z][A-Z0-9]*[0-9][A-Z]+)\b'
-                msg_calls_raw = re.findall(call_pattern, message, re.IGNORECASE)
-                # Filter out non-callsign tokens (CQ directives, signal reports, etc.)
-                non_calls = {'CQ', 'DX', 'NA', 'EU', 'AS', 'AF', 'SA', 'OC', 'AN', 'RR73', 'RR15', 'RR99'}
-                msg_calls = [c.upper() for c in msg_calls_raw if c.upper() not in non_calls]
-                # In standard FT8 format, the transmitter is the last callsign
-                # "CQ W5ABC EM12" → after filter: ['W5ABC'] → transmitter = W5ABC
-                # "W5ABC K3LR EM12" → ['W5ABC', 'K3LR'] → transmitter = K3LR (2nd)
-                # "K3LR W5ABC R-15" → ['K3LR', 'W5ABC'] → transmitter = W5ABC (2nd)
-                transmitter = msg_calls[-1] if msg_calls else None
                 for c in msg_calls:
                     if c != 'N5ZY' and c in self.priority_stations:
                         is_transmitting = (c == transmitter)
-                        band_display = self._freq_to_band(actual_freq_mhz) if actual_freq_mhz else self._extract_band_freq(band_name)
                         self.priority_callback(band_display, c, actual_freq_mhz, is_transmitting)
+                        dx_handled = True
                         break  # One priority alert per decode line
+
+            # Dynamic DX2/DX3 check: fire for the transmitter so PriorityEngine
+            # can check against LoTW data (new DXCC entity / new band)
+            if (not dx_handled and self.decode_check_callback
+                    and transmitter and transmitter != 'N5ZY'):
+                self.decode_check_callback(band_display, transmitter, actual_freq_mhz, True)
 
             # Extract grid square (4 characters: 2 letters + 2 digits)
             grid_match = re.search(r'\b([A-R]{2}\d{2})\b', message, re.IGNORECASE)

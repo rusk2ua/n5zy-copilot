@@ -95,6 +95,9 @@ class CoPilotApp:
         # APRS nearby stations for rover broadcasts: {callsign: (distance_mi, bearing, timestamp)}
         self.nearby_aprs_stations = {}
 
+        # DX2/DX3 decode check dedup: {callsign: time.time()} — 2-min cooldown
+        self._decode_check_recent = {}
+
         # QSO Party data (loaded from N1MM+ QSOParty.sec file)
         self.qso_parties = {}
         self._load_qsoparty_data()
@@ -2861,17 +2864,29 @@ class CoPilotApp:
             print(f"Error adding PSK spot to tree: {e}")
 
     def _insert_priority_spot(self, time_str, pri_text, row_tag, spot_data, prop_mode):
-        """Insert a spot into the Priority Alerts pane"""
+        """Insert a spot into the Priority Alerts pane (deduped by callsign+band)"""
         prop_display = {
             'multi_hop_e': 'MSp-E', 'sporadic_e': 'Sp-E',
             'tropo': 'Tropo', 'line_of_sight': 'LOS',
         }.get(prop_mode, prop_mode)
 
+        far_call = spot_data.get('far_call', '')
+        band = spot_data.get('band', '')
+
+        # Dedup: if same callsign+band already exists, update time and move to top
+        for item in self.psk_priority_tree.get_children():
+            values = self.psk_priority_tree.item(item, 'values')
+            if len(values) >= 5 and values[4] == far_call and values[2] == band:
+                new_values = (time_str,) + values[1:]
+                self.psk_priority_tree.item(item, values=new_values)
+                self.psk_priority_tree.move(item, '', 0)
+                return
+
         self.psk_priority_tree.insert('', 0, values=(
-            time_str, pri_text, spot_data.get('band', ''),
+            time_str, pri_text, band,
             spot_data.get('nearby_call', ''),
-            spot_data.get('far_call', ''),
-            self._resolve_entity(spot_data.get('far_call', '')),
+            far_call,
+            self._resolve_entity(far_call),
             spot_data.get('qso_distance', ''),
             spot_data.get('my_distance', ''),
             spot_data.get('bearing', ''),
@@ -2901,9 +2916,12 @@ class CoPilotApp:
         self.psk_last_update_var.set(f"Last updated: {now.strftime('%H:%M:%S')} ({spot_count} spots)")
     
     def _clear_psk_alerts(self):
-        """Clear Propagation alerts display (not Priority pane)"""
+        """Clear Propagation alerts display and reset alert cooldowns"""
         for item in self.psk_alert_tree.get_children():
             self.psk_alert_tree.delete(item)
+        # Reset PSK Monitor's alert cooldowns so cleared spots can re-appear
+        if hasattr(self, 'psk_monitor') and self.psk_monitor:
+            self.psk_monitor.recent_alerts.clear()
 
     # ── Priority Pane Management ──
 
@@ -2971,7 +2989,13 @@ class CoPilotApp:
 
         # Numeric sort for distance columns
         numeric_cols = {'qso_dist', 'my_dist'}
-        if col in numeric_cols:
+        if col == 'pri':
+            # Priority rank: DX!/AP! highest, P1!→P4 descending, -- (LOS) lowest
+            pri_rank = {'DX!': 0, 'DX2': 0, 'DX3': 0, 'AP!': 0,
+                        'P1!': 1, 'P2!': 2, 'P2': 3, 'P3': 4, 'P4': 5, '--': 6}
+            items.sort(key=lambda item: pri_rank.get(item[0], 6),
+                       reverse=self._psk_sort_reverse)
+        elif col in numeric_cols:
             def sort_key(item):
                 try:
                     return float(item[0]) if item[0] else 0
@@ -5450,6 +5474,8 @@ class CoPilotApp:
             )
             self.log_monitor.priority_stations = self._parse_priority_stations(
                 self.config.get('dx_priority_stations', '') or self.config.get('psk_priority_stations', ''))
+            # Enable dynamic DX2/DX3 detection from ALL.TXT decodes
+            self.log_monitor.decode_check_callback = self._on_decode_check
             self.log_monitor.start()
 
             # Start priority alert aging timer (every 60 seconds)
@@ -6438,14 +6464,46 @@ class CoPilotApp:
             self.add_alert(msg, priority=True, callsign=callsign)
             self.voice.announce(f"{callsign} calling on {band}", category="calling_me")
 
+    def _on_decode_check(self, band, callsign, freq_mhz, is_transmitting=True):
+        """Dynamic DX2/DX3 check for ALL.TXT decodes not in the DX! station list.
+
+        Called for every decoded transmitter so PriorityEngine can check against
+        LoTW data for new DXCC entity (DX2) or new DXCC on band (DX3).
+        """
+        import time as _time
+        if not callsign or not band:
+            return
+
+        # 2-minute per-callsign dedup to avoid running PriorityEngine every 15s
+        now = _time.time()
+        last = self._decode_check_recent.get(callsign.upper(), 0)
+        if now - last < 120:
+            return
+        self._decode_check_recent[callsign.upper()] = now
+
+        # Clean old entries (> 5 min) to prevent unbounded dict growth
+        cutoff = now - 300
+        self._decode_check_recent = {
+            k: v for k, v in self._decode_check_recent.items() if v > cutoff
+        }
+
+        # Run PriorityEngine check (DX2/DX3 require LoTW data)
+        if not hasattr(self, 'priority_engine') or not self.priority_engine:
+            return
+        priority_result = self.priority_engine.check(callsign, band, '')
+        if priority_result and priority_result.code in ('DX2', 'DX3'):
+            # Route to on_priority_decode for alert + SMS + voice
+            self.root.after(0, lambda: self.on_priority_decode(
+                band, callsign, freq_mhz, is_transmitting))
+
     def on_priority_decode(self, band, callsign, freq_mhz, is_transmitting=True):
         """Called when a priority station is decoded in ALL.TXT.
 
         is_transmitting: True if WE heard the priority station transmit,
                          False if we heard someone else call them.
         """
-        if not self.config.get('psk_priority_enabled', False):
-            return
+        # Note: intentionally NOT gated on psk_priority_enabled — ALL.TXT priority
+        # detection (DX!, DX2, DX3) should work independently of PSK Monitor.
 
         from datetime import datetime
         time_str = datetime.now().strftime('%H:%M')
