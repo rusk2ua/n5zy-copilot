@@ -79,6 +79,7 @@ This file documents all working features. Use this to verify nothing gets broken
 - [x] HF Spot Radius field for filtering interesting PSK Reporter data
 - [x] Baseline Period field for "Band opening" detection
 - [x] Enable checkboxes for various alerts (Band opening, MSp-E, Sp-E, Unusual modes (Q65, MSK144, FT4) and Cross-ref QSY Advisor)
+- [x] **Daily DX mode** — DX2/DX3 dynamic detection from ALL.TXT decodes via PriorityEngine
 
 ### Slack Notifications
 - [x] Enable checkbox
@@ -136,6 +137,10 @@ This file documents all working features. Use this to verify nothing gets broken
 - [x] Configurable VHF and HF radius on settings tab
 - [x] Dynamic frequency range based on selected bands on settings tab
 - [x] Button for refresh now and Clear Alerts
+- [x] **Clear Alerts resets alert cooldowns** so cleared spots re-appear on next poll
+- [x] **Priority Alerts pane** — deduplicates same callsign+band (updates timestamp, moves to top)
+- [x] **Priority Alerts aging** — entries older than 30 minutes automatically removed
+- [x] **Priority sort** — "--" (LOS) sorts as P6 (lowest), DX!/AP! sort as highest
 
 ## Process Monitoring
 - [x] N1MM+ process monitor (resends grid/county on restart)
@@ -201,7 +206,9 @@ This file documents all working features. Use this to verify nothing gets broken
   - [x] New DXCC Entity (DX2) alerts
   - [x] New DXCC on Band (DX3) alerts
   - [x] New Grid alerts
-  - [x] 10-second rate limiting between automatic SMS
+  - [x] 10-second global rate limiting between automatic SMS
+  - [x] Per-station 5-minute cooldown (prevents SMS flooding from repeated decodes)
+  - [x] Transmitter detection — only alerts when hearing the DX station transmit (not callers)
 - [x] **Rover Status Messages** (broadcast to subscribers):
   - [x] Pre-filled templates: Grid Entry, Hilltop, Departing, QRT/Break, Band Change
   - [x] Template variables: {MyCall}, {MyGrid}, {bands} resolved from live app state
@@ -315,6 +322,9 @@ Credits section
 
 ## Version History
 
+- **1.9.3** - PSK Monitor fixes: Clear Alerts resets cooldowns, Priority pane dedup (same callsign+band updates instead of duplicating), DX2/DX3 detection from ALL.TXT decodes via PriorityEngine, "--" sorts as P6, Priority Alerts auto-age out after 30 minutes
+- **1.9.2** - Priority SMS: transmitter detection (only alerts when hearing DX station directly), per-station 5-min SMS cooldown, PSK Monitor fast first-poll retry (10s until first success)
+- **1.9.1** - Credential encryption (Fernet AES-128-CBC + HMAC-SHA256), APRS SSID routing fix (keeps full callsign-SSID for nearby broadcasts)
 - **1.9.0** - SMS Notify tab (Twilio SMS, Slack, APRS nearby broadcast), GPS time sync safety guards (fixes runaway feedback loop), voice alert category split (New Grid / Calling Me separated)
 - **1.8.58** - Fix incorrect band in New Grid alerts (HF frequency range), fix FSQCALL mode in Log4OM (ADIF 3.1.1+ mode mapping)
 - **1.8.57** - GPS baud rate control, GPS update rate control (UBX), GPS time sync feature, voice alert category filtering, PSK Reporter Entity column

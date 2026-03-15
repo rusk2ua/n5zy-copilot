@@ -12,8 +12,8 @@ A Python/tkinter dashboard for amateur radio VHF/UHF contest roving. Integrates 
 - **Contest Logging** - N1MM+ (TCP/RoverQTH), N3FJP, and Log4OM integration with ADIF output
 - **SMS Notifications** - Twilio SMS alerts for DX/New Grid, rover status broadcasts to subscriber list
 - **APRS** - APRS-IS messaging, position beaconing, nearby mobile station alerts with voice announcements
-- **PSK Reporter** - Band opening detection, Sporadic-E alerts, multi-hop Sp-E "PULL OVER!" alerts
-- **Priority Station Alerts** - DX! priority stations, new DXCC entity, new DXCC on band with LoTW/cty.dat lookup
+- **PSK Reporter** - Band opening detection, Sporadic-E alerts, multi-hop Sp-E "PULL OVER!" alerts, priority alert aging
+- **Priority Station Alerts** - DX! priority stations, DX2 (new DXCC entity), DX3 (new DXCC on band) with LoTW/cty.dat lookup, dynamic detection from ALL.TXT decodes
 - **QSY Advisor** - Station database to find who's active on which bands
 - **Voice Alerts** - Hands-free announcements for grid changes, QSOs, band openings, nearby stations
 - **Slack Integration** - Webhook notifications to multiple Slack channels
@@ -38,9 +38,8 @@ pip install -r requirements.txt
 ### Additional dependencies (optional)
 
 ```bash
+pip install cryptography          # Credential encryption in settings.json
 pip install victron-ble bleak     # Victron battery monitoring
-pip install requests beautifulsoup4  # PSK Reporter, QRZ lookups
-pip install aprslib               # APRS-IS messaging
 ```
 
 ## Quick Start
@@ -96,6 +95,7 @@ modules/
   psk_monitor.py        # PSK Reporter integration
   qsoparty_parser.py    # QSO Party .sec file parser
   county_lookup.py      # GPS to county lookup (Census API)
+  credential_store.py   # Fernet encryption for sensitive config fields
 tools/
   parse_public_logs.py  # 3830scores scraper for QSY Advisor database
 data/
