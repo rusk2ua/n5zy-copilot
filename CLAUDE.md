@@ -86,6 +86,7 @@ pip install victron-ble bleak   # For Victron battery monitoring
 See `FEATURES.md` for detailed feature status and version history.
 
 ## Recent Changes (Mar 2025)
+- **v1.9.1**: Credential encryption (Fernet), fix PSK Monitor (Clear Alerts, priority dedup, DX2/DX3 from ALL.TXT), fix priority SMS (transmitter detection, per-station 5-min cooldown), fix APRS SSID routing, priority sort fix
 - **v1.9.0**: SMS Notify tab (Twilio SMS, Slack, APRS nearby broadcast), GPS time sync safety guards, voice alert category split
 - **v1.8.58**: Fix hardcoded band in New Grid alerts, fix FSQCALL mode in Log4OM
 - **v1.8.57**: GPS baud/update rate control, GPS time sync, voice category filtering, PSK Entity column
