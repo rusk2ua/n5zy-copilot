@@ -48,7 +48,7 @@ VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', 
 ALL_BANDS = HF_BANDS + VHF_BANDS
 
 class CoPilotApp:
-    VERSION = "1.9.3"
+    VERSION = "1.9.4"
     
     def __init__(self, root):
         self.root = root
@@ -6540,7 +6540,7 @@ class CoPilotApp:
 
             spot_data = {
                 'band': band,
-                'nearby_call': self.config.get('aprs_callsign', 'N5ZY'),
+                'nearby_call': self.config.get('aprs_callsign', 'N5ZY') if is_transmitting else '',
                 'far_call': callsign,
                 'qso_distance': '',
                 'my_distance': my_dist_str,

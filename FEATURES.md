@@ -322,6 +322,7 @@ Credits section
 
 ## Version History
 
+- **1.9.4** - Fix Priority pane: nearby callsign is blank when not hearing DX station directly (only shows your call when you decoded the priority station transmitting)
 - **1.9.3** - PSK Monitor fixes: Clear Alerts resets cooldowns, Priority pane dedup (same callsign+band updates instead of duplicating), DX2/DX3 detection from ALL.TXT decodes via PriorityEngine, "--" sorts as P6, Priority Alerts auto-age out after 30 minutes
 - **1.9.2** - Priority SMS: transmitter detection (only alerts when hearing DX station directly), per-station 5-min SMS cooldown, PSK Monitor fast first-poll retry (10s until first success)
 - **1.9.1** - Credential encryption (Fernet AES-128-CBC + HMAC-SHA256), APRS SSID routing fix (keeps full callsign-SSID for nearby broadcasts)
