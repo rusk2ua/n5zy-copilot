@@ -532,7 +532,13 @@ class PSKMonitor:
     
     def _classify_propagation(self, distance, band, spot):
         """Classify the likely propagation mode based on distance and band"""
-        
+
+        # HF bands: skywave is normal, only short-distance is groundwave
+        if band in self.HF_BANDS:
+            if distance < 100:
+                return 'groundwave'
+            return 'skywave'
+
         # Check for TEP (Trans-Equatorial Propagation)
         if distance > 2000:
             sender_lat, _ = self._grid_to_latlon(spot.get('sender_grid', ''))

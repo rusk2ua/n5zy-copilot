@@ -48,7 +48,7 @@ VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', 
 ALL_BANDS = HF_BANDS + VHF_BANDS
 
 class CoPilotApp:
-    VERSION = "1.9.4"
+    VERSION = "1.9.5"
     
     def __init__(self, root):
         self.root = root
@@ -2691,7 +2691,7 @@ class CoPilotApp:
         ttk.Label(psk_activity_outer, text="P2  Sp-E UHF", font=('Arial', 8)).pack(anchor=tk.W)
         ttk.Label(psk_activity_outer, text="P3  Sp-E 2m/6m", font=('Arial', 8)).pack(anchor=tk.W)
         ttk.Label(psk_activity_outer, text="P4  Tropo", font=('Arial', 8)).pack(anchor=tk.W)
-        ttk.Label(psk_activity_outer, text="--  LOS/Other", font=('Arial', 8)).pack(anchor=tk.W)
+        ttk.Label(psk_activity_outer, text="P5  LOS/GW/Sky", font=('Arial', 8)).pack(anchor=tk.W)
 
         # Bottom - Settings summary
         settings_frame = ttk.Frame(frame)
@@ -2834,13 +2834,14 @@ class CoPilotApp:
                 pri_text = 'P4'
                 row_tag = 'p4'
             else:
-                pri_text = '--'
+                pri_text = 'P5'
                 row_tag = 'info'
 
             # Format prop mode for display
             prop_display = {
                 'multi_hop_e': 'MSp-E', 'sporadic_e': 'Sp-E',
                 'tropo': 'Tropo', 'line_of_sight': 'LOS',
+                'groundwave': 'GW', 'skywave': 'Sky',
             }.get(prop_mode, prop_mode)
 
             self.psk_alert_tree.insert('', 0, values=(
@@ -2992,7 +2993,7 @@ class CoPilotApp:
         if col == 'pri':
             # Priority rank: DX!/AP! highest, P1!→P4 descending, -- (LOS) lowest
             pri_rank = {'DX!': 0, 'DX2': 0, 'DX3': 0, 'AP!': 0,
-                        'P1!': 1, 'P2!': 2, 'P2': 3, 'P3': 4, 'P4': 5, '--': 6}
+                        'P1!': 1, 'P2!': 2, 'P2': 3, 'P3': 4, 'P4': 5, 'P5': 6}
             items.sort(key=lambda item: pri_rank.get(item[0], 6),
                        reverse=self._psk_sort_reverse)
         elif col in numeric_cols:

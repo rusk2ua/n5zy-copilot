@@ -86,6 +86,7 @@ pip install victron-ble bleak   # For Victron battery monitoring
 See `FEATURES.md` for detailed feature status and version history.
 
 ## Recent Changes (Mar 2025)
+- **v1.9.5**: PSK Monitor — change '--' priority to 'P5' for sorting, HF-aware propagation (GW/Sky instead of Sp-E/Tropo)
 - **v1.9.4**: Fix Priority pane nearby callsign — blank when not hearing DX station directly
 - **v1.9.3**: PSK Monitor fixes — Clear Alerts resets cooldowns, Priority pane dedup, DX2/DX3 from ALL.TXT decodes, "--" sorts as P6, Priority Alerts 30-min auto-aging
 - **v1.9.2**: Priority SMS transmitter detection, per-station 5-min SMS cooldown, PSK Monitor fast first-poll retry
