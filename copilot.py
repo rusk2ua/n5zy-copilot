@@ -2595,14 +2595,14 @@ class CoPilotApp:
         # ── Priority Alerts pane (top) — pinned, time-aged ──
         self.psk_priority_frame = ttk.LabelFrame(self.psk_paned, text="Priority Alerts", padding=5)
 
-        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
+        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'far_grid', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
 
         self.psk_priority_tree = ttk.Treeview(self.psk_priority_frame, columns=alert_columns,
                                                show='headings', height=5)
         for col, heading, width in [
             ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
-            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('entity', 'Entity', 95),
-            ('qso_dist', 'QSO Dist', 55),
+            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('far_grid', 'Grid', 55),
+            ('entity', 'Entity', 95), ('qso_dist', 'QSO Dist', 55),
             ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
         ]:
             self.psk_priority_tree.heading(col, text=heading)
@@ -2629,8 +2629,8 @@ class CoPilotApp:
 
         for col, heading, width in [
             ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
-            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('entity', 'Entity', 95),
-            ('qso_dist', 'QSO Dist', 55),
+            ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('far_grid', 'Grid', 55),
+            ('entity', 'Entity', 95), ('qso_dist', 'QSO Dist', 55),
             ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
         ]:
             self.psk_alert_tree.heading(col, text=heading,
@@ -2848,6 +2848,7 @@ class CoPilotApp:
                 time_str, pri_text, band,
                 spot_data.get('nearby_call', ''),
                 spot_data.get('far_call', ''),
+                spot_data.get('far_grid', spot_data.get('grid', '')),
                 self._resolve_entity(spot_data.get('far_call', '')),
                 spot_data.get('qso_distance', ''),
                 spot_data.get('my_distance', ''),
@@ -2887,6 +2888,7 @@ class CoPilotApp:
             time_str, pri_text, band,
             spot_data.get('nearby_call', ''),
             far_call,
+            spot_data.get('far_grid', spot_data.get('grid', '')),
             self._resolve_entity(far_call),
             spot_data.get('qso_distance', ''),
             spot_data.get('my_distance', ''),
@@ -3011,10 +3013,10 @@ class CoPilotApp:
             self.psk_alert_tree.move(k, '', index)
 
         # Update heading indicators
-        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
+        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'far_grid', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
         heading_names = {
             'time': 'Time', 'pri': 'P', 'band': 'Band', 'nearby': 'Nearby',
-            'far': 'Far (Try!)', 'entity': 'Entity', 'qso_dist': 'QSO Dist',
+            'far': 'Far (Try!)', 'far_grid': 'Grid', 'entity': 'Entity', 'qso_dist': 'QSO Dist',
             'my_dist': 'My Dist', 'my_dir': 'My Dir', 'prop': 'Prop', 'mode': 'Mode',
         }
         for c in alert_columns:
@@ -3158,7 +3160,7 @@ class CoPilotApp:
 
         item = selection[0]
         values = tree.item(item, 'values')
-        # columns: time, pri, band, nearby, far, qso_dist, my_dist, my_dir, prop, mode
+        # columns: time, pri, band, nearby, far, far_grid, entity, qso_dist, my_dist, my_dir, prop, mode
         if len(values) >= 5:
             far_call = values[4]  # The "far" callsign is who to look up
             if far_call and far_call != '--':
