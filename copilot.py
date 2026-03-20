@@ -55,6 +55,14 @@ class CoPilotApp:
         self.root.title(f"N5ZY VHF Contest Co-Pilot v{self.VERSION}")
         self.root.geometry("850x550")  # Default size
         self.root.minsize(700, 400)    # Minimum size
+
+        # Set window icon
+        icon_path = Path(__file__).parent / 'bison.ico'
+        if icon_path.exists():
+            try:
+                self.root.iconbitmap(str(icon_path))
+            except Exception:
+                pass
         
         # Config file location
         self.config_file = Path("config/settings.json")
