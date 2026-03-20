@@ -9,6 +9,7 @@ LoTW download endpoint:
 
 import re
 import os
+import ssl
 import threading
 import urllib.request
 import urllib.parse
@@ -106,7 +107,22 @@ class LoTWClient:
             req = urllib.request.Request(url)
             req.add_header('User-Agent', 'N5ZY-CoPilot/1.9')
 
-            with urllib.request.urlopen(req, timeout=60) as response:
+            # Build SSL context with Windows cert store (Python may not load it)
+            ssl_ctx = ssl.create_default_context()
+            if hasattr(ssl, 'enum_certificates'):
+                for store_name in ('ROOT', 'CA'):
+                    try:
+                        for cert, encoding, trust in ssl.enum_certificates(store_name):
+                            if encoding == 'x509_asn' and trust is True:
+                                try:
+                                    ssl_ctx.load_verify_locations(
+                                        cadata=ssl.DER_cert_to_PEM_cert(cert))
+                                except ssl.SSLError:
+                                    pass
+                    except OSError:
+                        pass
+
+            with urllib.request.urlopen(req, timeout=60, context=ssl_ctx) as response:
                 data = response.read().decode('utf-8', errors='ignore')
 
             # Check for login errors
