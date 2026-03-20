@@ -48,7 +48,7 @@ VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', 
 ALL_BANDS = HF_BANDS + VHF_BANDS
 
 class CoPilotApp:
-    VERSION = "1.9.6"
+    VERSION = "1.9.7"
     
     def __init__(self, root):
         self.root = root
@@ -113,6 +113,8 @@ class CoPilotApp:
         # Super Check Partial (SCP) callsign database
         self.scp_calls = []
         self.worked_calls = set()  # Callsigns from QSO Log for SCP matching
+        self._worked_call_band = set()       # (callsign_upper, band) — Daily DX alert suppression
+        self._worked_call_band_mode = set()  # (callsign_upper, band, mode) — Daily DX PSK suppression
         self._load_scp_database()
         
         # QRZ session for fallback lookups
@@ -2510,7 +2512,14 @@ class CoPilotApp:
             dx_call = qso_data.get('dx_call', '').upper()
             if dx_call:
                 self.worked_calls.add(dx_call)
-            
+                # Track for Daily DX alert suppression
+                band = qso_data.get('band', '')
+                mode = qso_data.get('mode', '').upper()
+                if band:
+                    self._worked_call_band.add((dx_call, band))
+                    if mode:
+                        self._worked_call_band_mode.add((dx_call, band, mode))
+
             # Limit set size (keep last 100 QSOs)
             if len(self._recent_qsos) > 100:
                 # Remove oldest entries (sets don't maintain order, but this prevents unbounded growth)
@@ -2804,9 +2813,14 @@ class CoPilotApp:
             # Also check legacy priority_dx flag
             if not priority_result and spot_data.get('priority_dx'):
                 # Legacy DX! path — build a result-like dict for routing
+                matched_call = spot_data.get('priority_call', '')
+                # Suppress if already worked on this band+mode (Daily DX only)
+                spot_mode = spot_data.get('mode', '')
+                if spot_mode and self._is_worked_on_band_mode(matched_call, band, spot_mode):
+                    self._update_psk_band_activity()
+                    return
                 pri_text = 'DX!'
                 row_tag = 'dx'
-                matched_call = spot_data.get('priority_call', '')
                 if matched_call:
                     self._priority_voice_alert(matched_call, band)
                 # Route to priority pane
@@ -2815,6 +2829,11 @@ class CoPilotApp:
                 return
 
             if priority_result:
+                # Suppress if already worked on this band+mode (Daily DX only)
+                spot_mode = spot_data.get('mode', '')
+                if spot_mode and self._is_worked_on_band_mode(priority_result.callsign, band, spot_mode):
+                    self._update_psk_band_activity()
+                    return
                 pri_text = priority_result.code
                 row_tag = priority_result.tag
                 # Fire voice alert with dedup
@@ -5036,6 +5055,10 @@ class CoPilotApp:
         try:
             # Clear current display
             self.clear_qso_display()
+
+            # Reset worked-station alert suppression sets
+            self._worked_call_band = set()
+            self._worked_call_band_mode = set()
             
             # Reset QSY Advisor tracking
             if self.qsy_advisor:
@@ -5111,7 +5134,12 @@ class CoPilotApp:
                         
                         # Add to worked_calls for SCP matching
                         self.worked_calls.add(callsign.upper())
-                        
+
+                        # Track for Daily DX alert suppression
+                        self._worked_call_band.add((callsign.upper(), band))
+                        if mode and mode != '?':
+                            self._worked_call_band_mode.add((callsign.upper(), band, mode.upper()))
+
                         qso_count += 1
                 
                 files_loaded += 1
@@ -5130,7 +5158,38 @@ class CoPilotApp:
             
             self.add_alert(f"Reloaded {qso_count} QSOs from {files_loaded} log file(s)")
             self.voice.announce(f"Reloaded {qso_count} QSOs from {files_loaded} days", category="operational")
-            
+
+            # Second pass: extend worked-station sets with older ADIF files for
+            # Daily DX alert suppression (default 21 days lookback)
+            lookback = self.config.get('worked_alert_lookback_days', 21)
+            for days_ago in range(4, lookback):
+                date_str = (today - timedelta(days=days_ago)).strftime('%Y%m%d')
+                adif_path = os.path.join(log_dir, f'n5zy_copilot_{date_str}.adi')
+                if os.path.exists(adif_path):
+                    try:
+                        with open(adif_path, 'r') as f:
+                            content = f.read()
+                        for record in re.split(r'<eor>|<EOR>', content, flags=re.IGNORECASE):
+                            if not record.strip():
+                                continue
+                            cm = re.search(r'<call:(\d+)>([^<]+)', record, re.IGNORECASE)
+                            bm = re.search(r'<band:(\d+)>([^<]+)', record, re.IGNORECASE)
+                            mm = re.search(r'<mode:(\d+)>([^<]+)', record, re.IGNORECASE)
+                            if cm and bm:
+                                cs = cm.group(2).strip().upper()
+                                bd = bm.group(2).strip()
+                                self._worked_call_band.add((cs, bd))
+                                self.worked_calls.add(cs)
+                                if mm:
+                                    md = mm.group(2).strip().upper()
+                                    self._worked_call_band_mode.add((cs, bd, md))
+                    except Exception:
+                        pass  # Skip unreadable older log files
+
+            if self._worked_call_band:
+                print(f"Daily DX alert suppression: {len(self._worked_call_band)} call+band, "
+                      f"{len(self._worked_call_band_mode)} call+band+mode entries loaded")
+
         except Exception as e:
             self.add_alert(f"Error reloading logs: {e}")
             self.voice.announce("Error reloading logs", category="operational")
@@ -6503,6 +6562,9 @@ class CoPilotApp:
             return
         priority_result = self.priority_engine.check(callsign, band, '')
         if priority_result and priority_result.code in ('DX2', 'DX3'):
+            # Suppress if already worked on this band (Daily DX only)
+            if self._is_worked_on_band(callsign, band):
+                return
             # Route to on_priority_decode for alert + SMS + voice
             self.root.after(0, lambda: self.on_priority_decode(
                 band, callsign, freq_mhz, is_transmitting))
@@ -6525,6 +6587,9 @@ class CoPilotApp:
             priority_result = self.priority_engine.check(callsign, band, '')
 
         if priority_result:
+            # Suppress if already worked on this band (Daily DX only)
+            if self._is_worked_on_band(callsign, band):
+                return
             if is_transmitting:
                 msg = f"{priority_result.code} {callsign} decoded on {band}"
             else:
@@ -6575,6 +6640,9 @@ class CoPilotApp:
                     self.send_sms(msg, callsign=callsign)
         else:
             # Fallback: legacy DX! behavior
+            # Suppress if already worked on this band (Daily DX only)
+            if self._is_worked_on_band(callsign, band):
+                return
             if is_transmitting:
                 msg = f"DX! {callsign} decoded on {band}"
             else:
@@ -6600,6 +6668,47 @@ class CoPilotApp:
             self.voice.announce(voice_msg, category="priority_dx")
         else:
             self.voice.announce(f"D X Priority {callsign} on {band}", category="priority_dx")
+
+    def _strip_call_modifiers(self, callsign):
+        """Strip /R, /P, /M etc. for matching worked stations."""
+        modifiers = ['/R', '/P', '/M', '/QRP', '/MM', '/AM', '/B',
+                     '/ROVER', '/PORTABLE', '/MOBILE', '/BEACON']
+        call = callsign.upper()
+        for mod in modifiers:
+            if call.endswith(mod):
+                call = call[:-len(mod)]
+        return call
+
+    def _is_worked_on_band(self, callsign, band):
+        """Check if station already worked on this band on ANY mode (ALL.TXT suppression).
+        Only active in Daily DX mode."""
+        if self.config.get('contest_mode') != 'daily_dx':
+            return False
+        if not callsign or not band:
+            return False
+        call_upper = callsign.upper().strip()
+        if (call_upper, band) in self._worked_call_band:
+            return True
+        base_call = self._strip_call_modifiers(call_upper)
+        if base_call != call_upper and (base_call, band) in self._worked_call_band:
+            return True
+        return False
+
+    def _is_worked_on_band_mode(self, callsign, band, mode):
+        """Check if station already worked on this band+mode (PSK Reporter suppression).
+        Only active in Daily DX mode."""
+        if self.config.get('contest_mode') != 'daily_dx':
+            return False
+        if not callsign or not band or not mode:
+            return False
+        call_upper = callsign.upper().strip()
+        mode_upper = mode.upper().strip()
+        if (call_upper, band, mode_upper) in self._worked_call_band_mode:
+            return True
+        base_call = self._strip_call_modifiers(call_upper)
+        if base_call != call_upper and (base_call, band, mode_upper) in self._worked_call_band_mode:
+            return True
+        return False
 
     def _parse_priority_stations(self, stations_str):
         """Parse comma-separated callsign list into a set of uppercase callsigns"""
