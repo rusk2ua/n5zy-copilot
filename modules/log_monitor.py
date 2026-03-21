@@ -231,7 +231,8 @@ class LogMonitor:
             #   "W5ABC K3LR EM12"      → K3LR is transmitting (calling W5ABC)
             #   "K3LR W5ABC R-15"      → W5ABC is transmitting (responding)
             # The transmitter is always the last callsign (2nd, or 1st after filtering CQ/directives)
-            call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[A-Z][A-Z0-9]*[0-9][A-Z]+)\b'
+            # Pattern covers both letter-prefix (W5ABC, AA5BB) and digit-prefix (7Z1IS, 3DA0RS, 9K2HN) calls
+            call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[0-9][A-Z]{1,2}[0-9][A-Z0-9]*[A-Z])\b'
             msg_calls_raw = re.findall(call_pattern, message, re.IGNORECASE)
             non_calls = {'CQ', 'DX', 'NA', 'EU', 'AS', 'AF', 'SA', 'OC', 'AN', 'RR73', 'RR15', 'RR99'}
             msg_calls = [c.upper() for c in msg_calls_raw if c.upper() not in non_calls]
@@ -262,8 +263,8 @@ class LogMonitor:
             grid = grid_match.group(1).upper()
             
             # Extract callsign (before the grid)
-            # Callsign pattern: letters and numbers, 3+ chars, must have at least one letter and one digit
-            call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[A-Z][A-Z0-9]*[0-9][A-Z]+)\b'
+            # Pattern covers both letter-prefix (W5ABC) and digit-prefix (7Z1IS, 9K2HN) calls
+            call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[0-9][A-Z]{1,2}[0-9][A-Z0-9]*[A-Z])\b'
             calls = re.findall(call_pattern, message[:grid_match.start()], re.IGNORECASE)
             
             if not calls:
