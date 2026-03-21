@@ -48,7 +48,7 @@ VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', 
 ALL_BANDS = HF_BANDS + VHF_BANDS
 
 class CoPilotApp:
-    VERSION = "1.9.8"
+    VERSION = "1.9.9"
     
     def __init__(self, root):
         self.root = root
@@ -6534,7 +6534,7 @@ class CoPilotApp:
             self.add_alert(msg, priority=True, callsign=callsign)
             self.voice.announce(f"{callsign} calling on {band}", category="calling_me")
 
-    def _on_decode_check(self, band, callsign, freq_mhz, is_transmitting=True):
+    def _on_decode_check(self, band, callsign, freq_mhz, is_transmitting=True, mode=''):
         """Dynamic DX2/DX3 check for ALL.TXT decodes not in the DX! station list.
 
         Called for every decoded transmitter so PriorityEngine can check against
@@ -6560,7 +6560,7 @@ class CoPilotApp:
         # Run PriorityEngine check (DX2/DX3 require LoTW data)
         if not hasattr(self, 'priority_engine') or not self.priority_engine:
             return
-        priority_result = self.priority_engine.check(callsign, band, '')
+        priority_result = self.priority_engine.check(callsign, band, mode)
         if priority_result and priority_result.code in ('DX2', 'DX3'):
             # Suppress if already worked on this band (Daily DX only)
             if self._is_worked_on_band(callsign, band):

@@ -201,6 +201,14 @@ class LogMonitor:
                 except ValueError:
                     continue
             
+            # Extract mode from ALL.TXT line (e.g., "FT8", "FT4", "Q65")
+            decode_mode = ''
+            mode_labels = {'FT8', 'FT4', 'JT65', 'JT9', 'Q65', 'MSK144', 'FSK441', 'ISCAT'}
+            for part in parts[2:7]:
+                if part.upper() in mode_labels:
+                    decode_mode = part.upper()
+                    break
+
             # Find the message - look for CQ or a callsign-like pattern
             message = None
             for i, part in enumerate(parts):
@@ -211,7 +219,7 @@ class LogMonitor:
                     if part.replace('.', '').replace('-', '').replace('+', '').isdigit():
                         continue
                     # Skip mode indicators
-                    if part.upper() in ['FT8', 'FT4', 'JT65', 'JT9', 'Q65', 'MSK144', 'RX', 'TX']:
+                    if part.upper() in mode_labels:
                         continue
                     message = ' '.join(parts[i:])
                     break
@@ -253,7 +261,7 @@ class LogMonitor:
             # can check against LoTW data (new DXCC entity / new band)
             if (not dx_handled and self.decode_check_callback
                     and transmitter and transmitter != 'N5ZY'):
-                self.decode_check_callback(band_display, transmitter, actual_freq_mhz, True)
+                self.decode_check_callback(band_display, transmitter, actual_freq_mhz, True, decode_mode)
 
             # Extract grid square (4 characters: 2 letters + 2 digits)
             grid_match = re.search(r'\b([A-R]{2}\d{2})\b', message, re.IGNORECASE)
