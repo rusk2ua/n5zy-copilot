@@ -730,6 +730,7 @@ class PSKMonitor:
         spot_data = {
             'timestamp': datetime.now(),
             'band': band,
+            'freq_mhz': spot.get('freq_mhz', ''),
             'nearby_call': spot['nearby_call'],  # Station near you
             'far_call': spot.get('far_call', ''),  # Station to try!
             'grid': spot.get('far_grid', ''),

@@ -48,7 +48,7 @@ VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', 
 ALL_BANDS = HF_BANDS + VHF_BANDS
 
 class CoPilotApp:
-    VERSION = "1.9.10"
+    VERSION = "1.9.11"
     
     def __init__(self, root):
         self.root = root
@@ -2612,12 +2612,12 @@ class CoPilotApp:
         # ── Priority Alerts pane (top) — pinned, time-aged ──
         self.psk_priority_frame = ttk.LabelFrame(self.psk_paned, text="Priority Alerts", padding=5)
 
-        alert_columns = ('time', 'pri', 'band', 'nearby', 'far', 'far_grid', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
+        alert_columns = ('time', 'pri', 'band', 'freq', 'nearby', 'far', 'far_grid', 'entity', 'qso_dist', 'my_dist', 'my_dir', 'prop', 'mode')
 
         self.psk_priority_tree = ttk.Treeview(self.psk_priority_frame, columns=alert_columns,
                                                show='headings', height=5)
         for col, heading, width in [
-            ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
+            ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45), ('freq', 'Freq', 60),
             ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('far_grid', 'Grid', 55),
             ('entity', 'Entity', 95), ('qso_dist', 'QSO Dist', 55),
             ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
@@ -2645,7 +2645,7 @@ class CoPilotApp:
                                            show='headings', height=12)
 
         for col, heading, width in [
-            ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45),
+            ('time', 'Time', 50), ('pri', 'P', 25), ('band', 'Band', 45), ('freq', 'Freq', 60),
             ('nearby', 'Nearby', 75), ('far', 'Far (Try!)', 75), ('far_grid', 'Grid', 55),
             ('entity', 'Entity', 95), ('qso_dist', 'QSO Dist', 55),
             ('my_dist', 'My Dist', 50), ('my_dir', 'My Dir', 35), ('prop', 'Prop', 50), ('mode', 'Mode', 45)
@@ -2871,8 +2871,12 @@ class CoPilotApp:
                 'groundwave': 'GW', 'skywave': 'Sky',
             }.get(prop_mode, prop_mode)
 
+            freq_display = spot_data.get('freq_mhz', '')
+            if freq_display:
+                freq_display = f"{float(freq_display):.3f}"
+
             self.psk_alert_tree.insert('', 0, values=(
-                time_str, pri_text, band,
+                time_str, pri_text, band, freq_display,
                 spot_data.get('nearby_call', ''),
                 spot_data.get('far_call', ''),
                 spot_data.get('far_grid', spot_data.get('grid', '')),
@@ -2901,18 +2905,22 @@ class CoPilotApp:
 
         far_call = spot_data.get('far_call', '')
         band = spot_data.get('band', '')
+        freq_display = spot_data.get('freq_mhz', '')
+        if freq_display:
+            freq_display = f"{float(freq_display):.3f}"
 
         # Dedup: if same callsign+band already exists, update time and move to top
+        # Column order: time(0), pri(1), band(2), freq(3), nearby(4), far(5), ...
         for item in self.psk_priority_tree.get_children():
             values = self.psk_priority_tree.item(item, 'values')
-            if len(values) >= 5 and values[4] == far_call and values[2] == band:
+            if len(values) >= 6 and values[5] == far_call and values[2] == band:
                 new_values = (time_str,) + values[1:]
                 self.psk_priority_tree.item(item, values=new_values)
                 self.psk_priority_tree.move(item, '', 0)
                 return
 
         self.psk_priority_tree.insert('', 0, values=(
-            time_str, pri_text, band,
+            time_str, pri_text, band, freq_display,
             spot_data.get('nearby_call', ''),
             far_call,
             spot_data.get('far_grid', spot_data.get('grid', '')),
@@ -6616,6 +6624,7 @@ class CoPilotApp:
 
             spot_data = {
                 'band': band,
+                'freq_mhz': freq_mhz,
                 'nearby_call': self.config.get('aprs_callsign', 'N5ZY') if is_transmitting else '',
                 'far_call': callsign,
                 'qso_distance': '',
