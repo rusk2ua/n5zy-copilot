@@ -597,10 +597,44 @@ class GPSMonitor:
             # Not on Windows or API not available
             return False
 
+    def _collect_offset_samples(self, num_samples=5, interval_s=3.0):
+        """Collect multiple GPS-vs-system offset readings for averaging.
+
+        Sleeps between samples so the GPS serial thread can deliver fresh
+        GPRMC timestamps.  Runs in the daemon sync thread — no UI impact.
+
+        Returns:
+            list[float]: offset values in milliseconds (GPS − System).
+                         May be shorter than *num_samples* if GPS fix is lost.
+        """
+        offsets = []
+        for i in range(num_samples):
+            # Wait for next reading (skip delay on first sample)
+            if i > 0:
+                time.sleep(interval_s)
+
+            # Check freshness — each sample must be < 5 s old
+            age_s = time.monotonic() - self._gps_datetime_monotonic
+            if self._gps_datetime_monotonic <= 0 or age_s > 5.0:
+                continue  # skip stale sample
+
+            gps_utc = self.gps_datetime_utc
+            if gps_utc is None:
+                continue
+
+            system_utc = datetime.now(timezone.utc)
+            offset_ms = (gps_utc - system_utc).total_seconds() * 1000.0
+            offsets.append(offset_ms)
+
+        return offsets
+
     def sync_system_clock(self):
         """Set Windows system clock from GPS UTC time.
 
         Requires Administrator privileges. Uses GPRMC date+time.
+        Collects 5 offset samples (median) and only applies FORWARD
+        corrections — backward jumps are blocked to protect WSJT-X
+        audio buffers.
 
         Returns:
             dict: {
@@ -609,6 +643,8 @@ class GPSMonitor:
                 'gps_time': datetime,
                 'fix_quality': int,
                 'satellites': int,
+                'samples': int (number of offset readings used),
+                'skipped_backward': bool (True if backward correction blocked),
                 'error': str (if failed)
             }
         """
@@ -659,10 +695,36 @@ class GPSMonitor:
                 'satellites': self.satellites,
             }
 
-        # Calculate offset before setting
-        system_utc = datetime.now(timezone.utc)
-        offset_delta = gps_utc - system_utc
-        offset_ms = offset_delta.total_seconds() * 1000.0
+        # Collect multiple offset samples and use median to smooth GPS jitter
+        samples = self._collect_offset_samples(num_samples=5, interval_s=3.0)
+
+        if len(samples) < 3:
+            return {
+                'success': False,
+                'error': f'Insufficient GPS samples ({len(samples)}/5) — GPS may have lost fix',
+                'samples': len(samples),
+                'fix_quality': self.gps_fix_quality,
+                'satellites': self.satellites,
+            }
+
+        samples.sort()
+        offset_ms = samples[len(samples) // 2]  # median
+
+        # Safety: Never set clock backward — backward jumps crash WSJT-X audio
+        if offset_ms < 0:
+            print(f"GPS Time Sync: SKIPPED — system ahead of GPS by "
+                  f"{abs(offset_ms):.0f}ms (backward correction blocked). "
+                  f"Samples: {[f'{s:+.0f}' for s in samples]}")
+            return {
+                'success': False,
+                'offset_ms': offset_ms,
+                'skipped_backward': True,
+                'samples': len(samples),
+                'error': f'Skipped backward correction ({offset_ms:+.0f}ms — system ahead of GPS)',
+                'gps_time': self.gps_datetime_utc,
+                'fix_quality': self.gps_fix_quality,
+                'satellites': self.satellites,
+            }
 
         # Safety: Reject unreasonably large offsets (> 30 seconds)
         # A properly functioning GPS should never need to adjust by more than a few seconds.
@@ -670,19 +732,31 @@ class GPSMonitor:
         MAX_OFFSET_MS = 30000.0  # 30 seconds
         if abs(offset_ms) > MAX_OFFSET_MS:
             print(f"GPS Time Sync: BLOCKED — offset {offset_ms:+.0f}ms exceeds "
-                  f"±{MAX_OFFSET_MS:.0f}ms safety limit. GPS time: {gps_utc}, "
-                  f"System time: {system_utc}")
+                  f"±{MAX_OFFSET_MS:.0f}ms safety limit. "
+                  f"Samples: {[f'{s:+.0f}' for s in samples]}")
             return {
                 'success': False,
                 'error': (f'Offset {offset_ms/1000:+.1f}s exceeds ±{MAX_OFFSET_MS/1000:.0f}s '
                           f'safety limit — possible stale GPS data'),
                 'offset_ms': offset_ms,
-                'gps_time': gps_utc,
+                'samples': len(samples),
+                'gps_time': self.gps_datetime_utc,
                 'fix_quality': self.gps_fix_quality,
                 'satellites': self.satellites,
             }
 
         try:
+            # Re-snapshot GPS time right before SetSystemTime (use fresh reading,
+            # not the one from ~12 seconds ago during sample collection)
+            gps_utc = self.gps_datetime_utc
+            if gps_utc is None:
+                return {
+                    'success': False,
+                    'error': 'GPS time lost during sample collection',
+                    'fix_quality': self.gps_fix_quality,
+                    'satellites': self.satellites,
+                }
+
             # Build SYSTEMTIME structure for SetSystemTime
             # SYSTEMTIME: WORD wYear, wMonth, wDayOfWeek, wDay,
             #             wHour, wMinute, wSecond, wMilliseconds
@@ -716,6 +790,7 @@ class GPSMonitor:
                     'success': False,
                     'error': f'SetSystemTime failed (error {err_code})',
                     'offset_ms': offset_ms,
+                    'samples': len(samples),
                     'gps_time': gps_utc,
                     'fix_quality': self.gps_fix_quality,
                     'satellites': self.satellites,
@@ -725,11 +800,13 @@ class GPSMonitor:
 
             fix_label = {0: 'None', 1: 'GPS', 2: 'DGPS'}.get(self.gps_fix_quality, str(self.gps_fix_quality))
             print(f"GPS Time Sync: Clock set to {gps_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC "
-                  f"(offset was {offset_ms:+.0f}ms, fix={fix_label}, sats={self.satellites})")
+                  f"(offset was {offset_ms:+.0f}ms, {len(samples)} samples, "
+                  f"fix={fix_label}, sats={self.satellites})")
 
             return {
                 'success': True,
                 'offset_ms': offset_ms,
+                'samples': len(samples),
                 'gps_time': gps_utc,
                 'fix_quality': self.gps_fix_quality,
                 'satellites': self.satellites,

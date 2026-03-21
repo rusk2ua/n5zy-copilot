@@ -62,7 +62,7 @@ pip install victron-ble bleak   # For Victron battery monitoring
 2. **APRS filtering**: Must filter own callsign (any SSID) from position alerts, but allow cross-SSID messages
 3. **Contest modes**: VHF Contest, 222 and Up, QSO Party - affects exchange fields and logging
 4. **Voice alerts**: Use `self.voice.announce()` for hands-free operation while driving; categories are individually togglable (new_grid, calling_me, etc.)
-5. **GPS Time Sync safety**: `sync_system_clock()` in gps_monitor.py has three safety guards — freshness check (30s), max offset (±30s), rate limit (60s monotonic). Never bypass these.
+5. **GPS Time Sync safety**: `sync_system_clock()` in gps_monitor.py has four safety guards — freshness check (30s), max offset (±30s), rate limit (60s monotonic), and forward-only gate (never sets clock backward). Uses median of 5 offset samples to smooth GPS jitter. Never bypass these.
 6. **SMS routing**: Automatic alerts (DX!/DX2/DX3/New Grid) go to personal number via `send_sms()`. Rover status broadcasts go to subscriber list via `_send_rover_sms()`. Both use Twilio REST API via `urllib.request` (no pip dependency).
 7. **ADIF modes**: FT8/FT4/Q65 are primary modes per ADIF 3.1.1+ (not MFSK submodes). Only SSB gets submode mapping (USB/LSB → SSB).
 8. **Credential encryption**: Sensitive config fields are Fernet-encrypted at rest (AES-128-CBC + HMAC-SHA256). Add new secret field names to `SENSITIVE_KEYS` in `modules/credential_store.py`. Key stored in user-specific dotfile outside the repo (`%APPDATA%/n5zy-copilot/.credential_key` on Windows, `~/.config/n5zy-copilot/.credential_key` on Linux/Mac).
@@ -86,6 +86,10 @@ pip install victron-ble bleak   # For Victron battery monitoring
 See `FEATURES.md` for detailed feature status and version history.
 
 ## Recent Changes (Mar 2025)
+- **v1.9.10**: GPS Time Sync — forward-only corrections with 5-sample median averaging to prevent WSJT-X audio desync
+- **v1.9.9**: ALL.TXT decode pipeline — extract mode (FT8/FT4/Q65) for DX3 mode/band_mode granularity checks
+- **v1.9.8**: Bison icon, LoTW SSL fix bump
+- **v1.9.7**: Daily DX alert suppression — suppress DX!/DX2/DX3 for already-worked stations (21-day ADIF lookback)
 - **v1.9.6**: Fix LoTW SSL certificate error — load Windows cert store for ARRL trust chain
 - **v1.9.5**: PSK Monitor — change '--' priority to 'P5' for sorting, HF-aware propagation (GW/Sky instead of Sp-E/Tropo)
 - **v1.9.4**: Fix Priority pane nearby callsign — blank when not hearing DX station directly

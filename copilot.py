@@ -48,7 +48,7 @@ VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', 
 ALL_BANDS = HF_BANDS + VHF_BANDS
 
 class CoPilotApp:
-    VERSION = "1.9.9"
+    VERSION = "1.9.10"
     
     def __init__(self, root):
         self.root = root
@@ -7332,11 +7332,18 @@ class CoPilotApp:
 
         else:
             error = result.get('error', 'Unknown error')
-            self.gps_sync_status_var.set(f"Sync failed: {error}")
-            print(f"GPS Time Sync: Failed — {error}")
-            # Show safety-blocked syncs in Alerts tab so user can see
-            if 'safety limit' in error or 'stale' in error.lower():
-                self.add_alert(f"⚠ GPS Time Sync BLOCKED: {error}")
+            if result.get('skipped_backward'):
+                # Forward-only gate: system clock ahead of GPS — expected, not an error
+                offset_ms = result.get('offset_ms', 0)
+                self.gps_sync_status_var.set(
+                    f"Skipped: system ahead by {abs(offset_ms):.0f}ms")
+                self._log_time_sync(result)
+            else:
+                self.gps_sync_status_var.set(f"Sync failed: {error}")
+                print(f"GPS Time Sync: Failed — {error}")
+                # Show safety-blocked syncs in Alerts tab so user can see
+                if 'safety limit' in error or 'stale' in error.lower():
+                    self.add_alert(f"⚠ GPS Time Sync BLOCKED: {error}")
 
     def _log_time_sync(self, result):
         """Append sync event to the time sync log file."""
@@ -7350,9 +7357,14 @@ class CoPilotApp:
                 offset = result.get('offset_ms', 0)
                 fix = result.get('fix_quality', 0)
                 sats = result.get('satellites', 0)
+                num_samples = result.get('samples', 1)
                 fix_labels = {0: 'None', 1: 'GPS', 2: 'DGPS'}
-                f.write(f"{ts} | GPS={gps_time} | offset={offset:+.0f}ms "
-                        f"| fix={fix_labels.get(fix, '?')} | sats={sats}\n")
+                action = ('SYNCED' if result.get('success') else
+                          'SKIPPED_BACKWARD' if result.get('skipped_backward') else
+                          'FAILED')
+                f.write(f"{ts} | {action} | GPS={gps_time} | offset={offset:+.0f}ms "
+                        f"| samples={num_samples} | fix={fix_labels.get(fix, '?')} "
+                        f"| sats={sats}\n")
         except Exception as e:
             print(f"GPS Time Sync: Log write error: {e}")
 
