@@ -2626,8 +2626,8 @@ class CoPilotApp:
             self.psk_priority_tree.column(col, width=width)
 
         # Priority tree tags
-        self.psk_priority_tree.tag_configure('dx', foreground='magenta', font=('Arial', 9, 'bold'))
-        self.psk_priority_tree.tag_configure('dx2', foreground='cyan', font=('Arial', 9, 'bold'))
+        self.psk_priority_tree.tag_configure('dx', foreground='red', font=('Arial', 9, 'bold'))
+        self.psk_priority_tree.tag_configure('dx2', foreground='magenta', font=('Arial', 9, 'bold'))
         self.psk_priority_tree.tag_configure('dx3', foreground='dodgerblue', font=('Arial', 9, 'bold'))
         self.psk_priority_tree.tag_configure('ap', foreground='lime green', font=('Arial', 9, 'bold'))
 
@@ -2659,8 +2659,8 @@ class CoPilotApp:
         self.psk_alert_tree.tag_configure('p2', foreground='orange', font=('Arial', 9, 'bold'))
         self.psk_alert_tree.tag_configure('p3', foreground='goldenrod')
         self.psk_alert_tree.tag_configure('p4', foreground='green')
-        self.psk_alert_tree.tag_configure('dx', foreground='magenta', font=('Arial', 9, 'bold'))
-        self.psk_alert_tree.tag_configure('dx2', foreground='cyan', font=('Arial', 9, 'bold'))
+        self.psk_alert_tree.tag_configure('dx', foreground='red', font=('Arial', 9, 'bold'))
+        self.psk_alert_tree.tag_configure('dx2', foreground='magenta', font=('Arial', 9, 'bold'))
         self.psk_alert_tree.tag_configure('dx3', foreground='dodgerblue', font=('Arial', 9, 'bold'))
         self.psk_alert_tree.tag_configure('ap', foreground='lime green', font=('Arial', 9, 'bold'))
         self.psk_alert_tree.tag_configure('info', foreground='gray')
