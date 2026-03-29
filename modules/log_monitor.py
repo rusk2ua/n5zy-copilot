@@ -228,8 +228,9 @@ class LogMonitor:
                 return
 
             # Skip if this is OUR OWN message (we're calling CQ or responding)
-            # Check if first callsign in message is N5ZY
-            if message.upper().startswith('CQ N5ZY') or message.upper().startswith('N5ZY '):
+            # Check if first callsign in message is N5ZY (including N5ZY/R, etc.)
+            msg_upper = message.upper()
+            if msg_upper.startswith('CQ N5ZY') or msg_upper.startswith('N5ZY ') or msg_upper.startswith('N5ZY/'):
                 return
 
             # Parse FT8/FT4 message to extract callsigns and identify transmitter
@@ -238,9 +239,14 @@ class LogMonitor:
             #   "CQ DX W5ABC EM12"     → W5ABC is transmitting (directed CQ)
             #   "W5ABC K3LR EM12"      → K3LR is transmitting (calling W5ABC)
             #   "K3LR W5ABC R-15"      → W5ABC is transmitting (responding)
+            #   "CQ VP9/AA1AC FM72"    → VP9/AA1AC is transmitting (compound call)
             # The transmitter is always the last callsign (2nd, or 1st after filtering CQ/directives)
-            # Pattern covers both letter-prefix (W5ABC, AA5BB) and digit-prefix (7Z1IS, 3DA0RS, 9K2HN) calls
-            call_pattern = r'\b([A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[0-9][A-Z]{1,2}[0-9][A-Z0-9]*[A-Z])\b'
+            # Pattern covers letter-prefix (W5ABC), digit-prefix (9K2HN), and compound (VP9/AA1AC) calls
+            # Base callsign: letter-prefix or digit-prefix
+            _base = r'[A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]|[0-9][A-Z]{1,2}[0-9][A-Z0-9]*[A-Z]'
+            # Compound callsign: optional prefix/ before base, optional /suffix after
+            # Prefix/suffix are short (1-4 char) country prefixes or modifiers (VP9/, /R, /P, /4)
+            call_pattern = r'\b((?:[A-Z0-9]{1,4}/)?(?:' + _base + r')(?:/[A-Z0-9]{1,4})?)\b'
             msg_calls_raw = re.findall(call_pattern, message, re.IGNORECASE)
             non_calls = {'CQ', 'DX', 'NA', 'EU', 'AS', 'AF', 'SA', 'OC', 'AN', 'RR73', 'RR15', 'RR99'}
             msg_calls = [c.upper() for c in msg_calls_raw if c.upper() not in non_calls]
@@ -251,7 +257,8 @@ class LogMonitor:
             dx_handled = False
             if self.priority_stations and self.priority_callback:
                 for c in msg_calls:
-                    if c != 'N5ZY' and c in self.priority_stations:
+                    # Filter own call in any compound form (N5ZY/R, VP9/N5ZY, etc.)
+                    if 'N5ZY' not in c.split('/') and c in self.priority_stations:
                         is_transmitting = (c == transmitter)
                         self.priority_callback(band_display, c, actual_freq_mhz, is_transmitting)
                         dx_handled = True
@@ -259,8 +266,10 @@ class LogMonitor:
 
             # Dynamic DX2/DX3 check: fire for the transmitter so PriorityEngine
             # can check against LoTW data (new DXCC entity / new band)
+            # Filter own call in any compound form (N5ZY, N5ZY/R, VP9/N5ZY, etc.)
+            tx_is_own = transmitter and 'N5ZY' in transmitter.split('/')
             if (not dx_handled and self.decode_check_callback
-                    and transmitter and transmitter != 'N5ZY'):
+                    and transmitter and not tx_is_own):
                 self.decode_check_callback(band_display, transmitter, actual_freq_mhz, True, decode_mode)
 
             # Extract grid square (4 characters: 2 letters + 2 digits)
