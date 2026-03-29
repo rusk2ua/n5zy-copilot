@@ -2825,6 +2825,10 @@ class CoPilotApp:
                     self._priority_voice_alert(matched_call, band)
                 # Route to priority pane
                 self._insert_priority_spot(time_str, pri_text, row_tag, spot_data, prop_mode)
+                # SMS for legacy DX! via PSK Reporter
+                if matched_call and self.config.get('sms_on_priority', False):
+                    msg = f"DX! {matched_call} spotted on {band} via PSK Reporter"
+                    self.send_sms(msg, callsign=matched_call)
                 self._update_psk_band_activity()
                 return
 
@@ -2841,6 +2845,21 @@ class CoPilotApp:
                                             voice_msg=priority_result.voice_msg)
                 # Route to Priority pane
                 self._insert_priority_spot(time_str, pri_text, row_tag, spot_data, prop_mode)
+                # SMS notification (same logic as ALL.TXT path)
+                code = priority_result.code
+                sms_send = False
+                if code == 'DX!' and self.config.get('sms_on_priority', False):
+                    sms_send = True
+                elif code == 'DX2' and self.config.get('sms_on_dx2', False):
+                    sms_send = True
+                elif code == 'DX3' and self.config.get('sms_on_dx3', False):
+                    sms_send = True
+                if sms_send:
+                    far_call = spot_data.get('far_call', priority_result.callsign)
+                    msg = f"{code} {far_call} spotted on {band} via PSK Reporter"
+                    if priority_result.entity_name:
+                        msg += f" ({priority_result.entity_name})"
+                    self.send_sms(msg, callsign=far_call)
                 self._update_psk_band_activity()
                 return
 
