@@ -169,6 +169,12 @@ class PriorityEngine:
                             voice_msg=f"D X 2 {self._call_to_voice(call_upper)} on {band}, {entity.name}",
                             tag='dx2',
                         )
+                else:
+                    print(f"PriorityEngine: {call_upper} — CTY lookup {'no match' if not entity else f'dxcc=0'}")
+            else:
+                print(f"PriorityEngine: {call_upper} — skipping DX2 "
+                      f"(cty={'yes' if self.cty_lookup._loaded else 'no'}, "
+                      f"lotw={'yes' if self.lotw_client.is_loaded() else 'no'})")
 
         # ── DX3 — New Band/Mode/Both (any mode) ──
         if self.dx3_enabled and self.cty_lookup and self.lotw_client:
@@ -217,6 +223,18 @@ class PriorityEngine:
                             voice_msg=f"D X 3 {self._call_to_voice(call_upper)} on {band}, {entity.name}, {gran_label}",
                             tag='dx3',
                         )
+                    else:
+                        print(f"PriorityEngine: {call_upper} — {entity.name} (#{dxcc}) "
+                              f"confirmed on {band}/{mode_group or '?'} (not DX3, "
+                              f"granularity={self.dx3_granularity})")
+            else:
+                if not (self.dx2_enabled and self.cty_lookup and self.lotw_client):
+                    # Already printed in DX2 block above
+                    pass
+                else:
+                    print(f"PriorityEngine: {call_upper} — skipping DX3 "
+                          f"(cty={'yes' if self.cty_lookup._loaded else 'no'}, "
+                          f"lotw={'yes' if self.lotw_client.is_loaded() else 'no'})")
 
         return None
 

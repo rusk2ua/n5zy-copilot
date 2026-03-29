@@ -5555,6 +5555,12 @@ class CoPilotApp:
             # Enable dynamic DX2/DX3 detection from ALL.TXT decodes
             self.log_monitor.decode_check_callback = self._on_decode_check
             self.log_monitor.start()
+            # Log LoTW state for DX2/DX3 diagnostics
+            if hasattr(self, 'lotw_client') and self.lotw_client:
+                print(f"LogMonitor: LoTW loaded={self.lotw_client.is_loaded()} — "
+                      f"DX2/DX3 from ALL.TXT {'active' if self.lotw_client.is_loaded() else 'waiting for LoTW data'}")
+            else:
+                print("LogMonitor: LoTW client not initialized — DX2/DX3 from ALL.TXT disabled")
 
             # Start priority alert aging timer (every 60 seconds)
             self.root.after(60000, self._age_priority_alerts)
@@ -6569,6 +6575,8 @@ class CoPilotApp:
         if not hasattr(self, 'priority_engine') or not self.priority_engine:
             return
         priority_result = self.priority_engine.check(callsign, band, mode)
+        if priority_result:
+            print(f"DecodeCheck: {callsign} on {band} → {priority_result.code} ({priority_result.entity_name})")
         if priority_result and priority_result.code in ('DX2', 'DX3'):
             # Suppress if already worked on this band (Daily DX only)
             if self._is_worked_on_band(callsign, band):
