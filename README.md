@@ -256,7 +256,7 @@ data/
 
 ## Acknowledgments
 
-- KML county boundary data from the [qsopartytracker](https://github.com/geoffeg/qsopartytracker) project by Geoff, KE5FPG — covering all US state QSO parties, 7QP, New England QSO Party (NEWE), and Salmon Run.
+- KML county boundary data from the [qsopartytracker](https://github.com/geoffeg/qsopartytracker) project by KC8FDU and K2UA — covering all US state QSO parties, 7QP, New England QSO Party (NEWE), and Salmon Run.
 - Contest abbreviations follow N1MM+ naming conventions where applicable.
 
 ## License
