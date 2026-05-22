@@ -3,6 +3,7 @@
     "gps_port": "COM3",
     "victron_address": "",
     "victron_key": "",
+    "contest_mode": "vhf",
     "contest_logger": "n1mm",
     "n1mm_udp_port": 52001,
     "n3fjp_port": 1100,
@@ -30,5 +31,12 @@
     "slack_enabled": false,
     "slack_webhooks": [],
     "grid_precision": 4,
-    "grid_boundary_alerts": false
+    "grid_boundary_alerts": false,
+    "voice_enabled": true,
+    "voice_disabled_categories": [],
+    "voice_per_contest": {
+        "_comment": "Per-contest voice alert overrides. Each key is a contest mode, value is list of ENABLED categories. If a mode is not listed here, built-in defaults are used. QSO Party defaults: county_change + warnings only.",
+        "qso_party": ["county_change", "warnings"],
+        "vhf": ["qso_logged", "grid_change", "county_change", "grid_boundary", "new_grid", "calling_me", "priority_dx", "psk_alert", "aprs_message", "aprs_nearby", "gps_waypoint", "warnings", "operational"]
+    }
 }
