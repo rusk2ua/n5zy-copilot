@@ -39,18 +39,6 @@ CONTEST_MODES = {
     'qso_party': 'State QSO Party (County)',
     'daily_dx': 'Daily DX (4-char grid)',
 }
-    try:
-        with open(settings_file, 'r') as f:
-            settings = json.load(f)
-    except FileNotFoundError:
-        logger.error(f"Settings file not found: {settings_file}")
-        raise SystemExit(f"Settings file not found: {settings_file}. Please create it from the template.")
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in settings file: {e}")
-        raise SystemExit(f"Settings file contains invalid JSON: {e}")
-    except Exception as e:
-        logger.error(f"Error loading settings: {e}")
-        raise SystemExit(f"Failed to load settings: {e}")
 
 # All voice alert category keys (must match VOICE_CATEGORIES in Settings tab)
 ALL_VOICE_CATEGORIES = [
@@ -70,7 +58,14 @@ CONTEST_VOICE_DEFAULTS = {
     'qso_party': {'county_change', 'warnings'}, # Only county change + warnings (battery/GPS)
     'daily_dx': set(ALL_VOICE_CATEGORIES),      # All alerts enabled for Daily DX
 }
-            modelId=model_id,
+
+# Logger display names
+LOGGER_NAMES = {
+    'n1mm': 'N1MM+',
+    'n3fjp': 'N3FJP',
+    'log4om': 'Log4OM',
+}
+
 # HF bands (including WARC bands) for QSO parties
 HF_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m']
 VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', '3cm']
