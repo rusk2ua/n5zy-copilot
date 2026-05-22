@@ -26,13 +26,19 @@ Usage:
 
 import re
 import xml.etree.ElementTree as ET
+try:
+    import defusedxml.ElementTree as SafeET
+except ImportError:
+    # stdlib ET uses expat which does NOT resolve external entities,
+    # making it safe against XXE by default (unknown entities raise ParseError)
+    SafeET = ET
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.strtree import STRtree
 from shapely.ops import unary_union
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
-from collections import defaultdict
+
 
 
 # Map KML filenames to contest identifiers
@@ -403,7 +409,9 @@ class KMLLookupService:
             Dict mapping abbreviation -> _KMLRegion with polygon list
         """
         # KML namespace handling - files may use different namespace URIs
-        tree = ET.parse(str(path))
+        # SafeET is defusedxml if available, otherwise stdlib ET (which is
+        # safe against XXE since expat doesn't resolve external entities).
+        tree = SafeET.parse(str(path))
         root = tree.getroot()
 
         # Detect namespace
@@ -513,7 +521,7 @@ class KMLLookupService:
             poly = poly.buffer(0)
             if poly.is_valid and not poly.is_empty:
                 return poly
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             pass
 
         return None
