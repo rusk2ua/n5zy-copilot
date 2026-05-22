@@ -478,7 +478,7 @@ class UnifiedLookupService:
         
         return results
     
-    def _infer_state_from_kml(self, kml_info) -> str:
+    def _infer_state_from_kml(self, kml_info: 'ContestCountyInfo') -> str:
         """Try to infer state abbreviation from KML contest info."""
         from modules.kml_lookup import ContestCountyInfo
         
