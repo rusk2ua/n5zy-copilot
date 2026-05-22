@@ -32,7 +32,6 @@ from shapely.ops import unary_union
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
-from collections import defaultdict
 
 
 # Map KML filenames to contest identifiers
