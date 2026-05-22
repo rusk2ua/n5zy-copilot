@@ -403,7 +403,7 @@ class KMLLookupService:
             Dict mapping abbreviation -> _KMLRegion with polygon list
         """
         # KML namespace handling - files may use different namespace URIs
-        tree = ET.parse(str(path))
+        tree = ET.parse(str(path), parser=ET.XMLParser(resolve_entities=False))
         root = tree.getroot()
 
         # Detect namespace
