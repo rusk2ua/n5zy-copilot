@@ -39,9 +39,38 @@ CONTEST_MODES = {
     'qso_party': 'State QSO Party (County)',
     'daily_dx': 'Daily DX (4-char grid)',
 }
+    try:
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+    except FileNotFoundError:
+        logger.error(f"Settings file not found: {settings_file}")
+        raise SystemExit(f"Settings file not found: {settings_file}. Please create it from the template.")
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in settings file: {e}")
+        raise SystemExit(f"Settings file contains invalid JSON: {e}")
+    except Exception as e:
+        logger.error(f"Error loading settings: {e}")
+        raise SystemExit(f"Failed to load settings: {e}")
 
-LOGGER_NAMES = {'n1mm': 'N1MM+', 'n3fjp': 'N3FJP', 'log4om': 'Log4OM'}
+# All voice alert category keys (must match VOICE_CATEGORIES in Settings tab)
+ALL_VOICE_CATEGORIES = [
+    "qso_logged", "grid_change", "county_change", "grid_boundary",
+    "new_grid", "calling_me", "priority_dx", "psk_alert",
+    "aprs_message", "aprs_nearby", "gps_waypoint", "warnings", "operational",
+]
 
+# Per-contest default voice alert configuration.
+# Keys are contest mode IDs from CONTEST_MODES.
+# Values are sets of category keys that should be ENABLED by default for that mode.
+# When switching contest modes, these defaults are applied unless the user has
+# saved a custom per-contest override in settings.json.
+CONTEST_VOICE_DEFAULTS = {
+    'vhf': set(ALL_VOICE_CATEGORIES),          # All alerts enabled for VHF contests
+    '222up': set(ALL_VOICE_CATEGORIES),         # All alerts enabled for 222 and Up
+    'qso_party': {'county_change', 'warnings'}, # Only county change + warnings (battery/GPS)
+    'daily_dx': set(ALL_VOICE_CATEGORIES),      # All alerts enabled for Daily DX
+}
+            modelId=model_id,
 # HF bands (including WARC bands) for QSO parties
 HF_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m']
 VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', '3cm']
@@ -6137,6 +6166,9 @@ class CoPilotApp:
         elif mode_key == 'daily_dx':
             self.config['grid_precision'] = 4
         
+        # Apply per-contest voice alert defaults
+        self._apply_contest_voice_defaults(mode_key)
+        
         self.save_config()
         self._update_contest_mode_ui()
         
@@ -7526,6 +7558,9 @@ class CoPilotApp:
                 disabled.add(key)
         self.voice.disabled_categories = disabled
         self.config['voice_disabled_categories'] = sorted(disabled)
+        # Save as per-contest override so the user's preference is
+        # remembered when switching back to this contest mode
+        self._save_contest_voice_override()
         self.save_config()
 
     def _update_voice_category_states(self):
@@ -7535,6 +7570,67 @@ class CoPilotApp:
         state = 'normal' if self.voice_enabled_var.get() else 'disabled'
         for key, cb in self.voice_category_cbs.items():
             cb.config(state=state)
+
+    def _apply_contest_voice_defaults(self, mode_key):
+        """
+        Apply per-contest voice alert defaults when switching contest modes.
+        
+        Uses saved per-contest overrides from config if available,
+        otherwise falls back to CONTEST_VOICE_DEFAULTS.
+        
+        Args:
+            mode_key: Contest mode key (e.g. 'vhf', 'qso_party')
+        """
+        # Check for user-saved per-contest override
+        per_contest_config = self.config.get('voice_per_contest', {})
+        
+        if mode_key in per_contest_config:
+            # User has saved custom settings for this contest mode
+            enabled_cats = set(per_contest_config[mode_key])
+        else:
+            # Use built-in defaults
+            enabled_cats = CONTEST_VOICE_DEFAULTS.get(mode_key, set(ALL_VOICE_CATEGORIES))
+        
+        # Calculate disabled categories (everything NOT in enabled set)
+        disabled_cats = set(ALL_VOICE_CATEGORIES) - enabled_cats
+        
+        # Apply to the voice module
+        self.voice.disabled_categories = disabled_cats
+        self.config['voice_disabled_categories'] = sorted(disabled_cats)
+        
+        # Update UI checkboxes if they exist
+        if hasattr(self, 'voice_category_vars'):
+            for key, var in self.voice_category_vars.items():
+                var.set(key in enabled_cats)
+        
+        # Log the change
+        if disabled_cats:
+            enabled_list = sorted(enabled_cats)
+            print(f"Voice: Applied {mode_key} defaults — enabled: {enabled_list}")
+        else:
+            print(f"Voice: Applied {mode_key} defaults — all categories enabled")
+
+    def _save_contest_voice_override(self):
+        """
+        Save the current voice category selections as a per-contest override.
+        
+        Called when user manually changes voice categories while in a specific
+        contest mode, so their preference is remembered for that mode.
+        """
+        mode_key = self.config.get('contest_mode', 'vhf')
+        
+        # Get currently enabled categories
+        enabled_cats = []
+        for key, var in self.voice_category_vars.items():
+            if var.get():
+                enabled_cats.append(key)
+        
+        # Save as per-contest override
+        if 'voice_per_contest' not in self.config:
+            self.config['voice_per_contest'] = {}
+        self.config['voice_per_contest'][mode_key] = sorted(enabled_cats)
+        self.save_config()
+        print(f"Voice: Saved custom override for {mode_key}: {sorted(enabled_cats)}")
 
     def discover_victron(self):
         """Discover Victron devices via Bluetooth"""
