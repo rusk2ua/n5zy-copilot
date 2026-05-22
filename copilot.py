@@ -70,7 +70,7 @@ CONTEST_VOICE_DEFAULTS = {
     'qso_party': {'county_change', 'warnings'}, # Only county change + warnings (battery/GPS)
     'daily_dx': set(ALL_VOICE_CATEGORIES),      # All alerts enabled for Daily DX
 }
-
+            modelId=model_id,
 # HF bands (including WARC bands) for QSO parties
 HF_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m']
 VHF_BANDS = ['6m', '2m', '1.25m', '70cm', '33cm', '23cm', '13cm', '9cm', '5cm', '3cm']
