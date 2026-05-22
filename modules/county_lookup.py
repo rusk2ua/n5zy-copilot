@@ -270,6 +270,249 @@ def get_county(latitude: float, longitude: float,
     return _default_service.lookup(latitude, longitude)
 
 
+# ─── Unified Lookup Interface ────────────────────────────────────────────────
+
+@dataclass
+class UnifiedCountyResult:
+    """
+    Unified result from either shapefile or KML lookup.
+    
+    Provides a consistent interface regardless of data source,
+    combining FIPS-based county info with contest exchange info.
+    """
+    # Common fields
+    county_name: str            # "Canadian", "Oklahoma", etc.
+    state_abbrev: str           # "OK", "TX", etc. (empty for non-US)
+    
+    # Shapefile-specific (may be None if from KML only)
+    fips: Optional[str] = None
+    state_fips: Optional[str] = None
+    state_name: Optional[str] = None
+    
+    # KML/contest-specific (may be None if from shapefile only)
+    contest_abbreviation: Optional[str] = None
+    contest: Optional[str] = None
+    
+    @property
+    def exchange(self) -> str:
+        """Best contest exchange value available"""
+        if self.contest_abbreviation:
+            return self.contest_abbreviation
+        # Fall back to county name for generic use
+        return self.county_name
+    
+    @property
+    def has_contest_info(self) -> bool:
+        """Whether this result includes contest-specific data"""
+        return self.contest_abbreviation is not None
+    
+    @property
+    def has_fips(self) -> bool:
+        """Whether this result includes FIPS code data"""
+        return self.fips is not None
+    
+    def __str__(self) -> str:
+        parts = [f"{self.county_name}, {self.state_abbrev}"]
+        if self.fips:
+            parts.append(f"FIPS:{self.fips}")
+        if self.contest_abbreviation:
+            parts.append(f"Exch:{self.contest_abbreviation}")
+        if self.contest:
+            parts.append(f"[{self.contest}]")
+        return " ".join(parts)
+
+
+class UnifiedLookupService:
+    """
+    Unified county/region lookup that combines shapefile and KML data sources.
+    
+    Provides a single lookup() call that returns results from both the
+    Census shapefile (FIPS codes) and QSO Party KML files (contest exchanges).
+    
+    Usage:
+        from modules.county_lookup import UnifiedLookupService
+        
+        service = UnifiedLookupService()
+        service.load_shapefile("data/us_counties_10m.shp")
+        service.load_kml_directory("data/kml_maps")
+        
+        result = service.lookup(35.4676, -97.5164, contest="OKQP")
+        print(result)  # "Canadian, OK FIPS:40017 Exch:CAN [OKQP]"
+    """
+    
+    def __init__(self):
+        self._shapefile_service: Optional[CountyLookupService] = None
+        self._kml_service = None  # Lazy import to avoid circular deps
+    
+    def load_shapefile(self, shapefile_path: str,
+                       progress_callback: Optional[Callable[[int], None]] = None):
+        """Load Census shapefile for FIPS-based lookups."""
+        self._shapefile_service = CountyLookupService()
+        self._shapefile_service.load_shapefile(shapefile_path, progress_callback)
+    
+    def load_kml(self, kml_path: str, contest: Optional[str] = None):
+        """Load a single KML file for contest boundary lookups."""
+        from modules.kml_lookup import KMLLookupService
+        if self._kml_service is None:
+            self._kml_service = KMLLookupService()
+        self._kml_service.load_kml(kml_path, contest=contest)
+    
+    def load_kml_directory(self, directory: str,
+                           contest_filter: Optional[str] = None):
+        """Load all KML files from a directory."""
+        from modules.kml_lookup import KMLLookupService
+        if self._kml_service is None:
+            self._kml_service = KMLLookupService()
+        self._kml_service.load_directory(directory, contest_filter=contest_filter)
+    
+    @property
+    def has_shapefile(self) -> bool:
+        return self._shapefile_service is not None and self._shapefile_service.is_loaded
+    
+    @property
+    def has_kml(self) -> bool:
+        return self._kml_service is not None and self._kml_service.is_loaded
+    
+    def lookup(self, latitude: float, longitude: float,
+               contest: Optional[str] = None) -> Optional[UnifiedCountyResult]:
+        """
+        Look up county/region for a GPS position.
+        
+        Combines results from both shapefile (FIPS) and KML (contest exchange)
+        sources into a single UnifiedCountyResult.
+        
+        Args:
+            latitude: Latitude in decimal degrees
+            longitude: Longitude in decimal degrees
+            contest: Optional contest filter for KML lookup
+            
+        Returns:
+            UnifiedCountyResult or None if not found in any source
+        """
+        shapefile_result = None
+        kml_result = None
+        
+        # Try shapefile lookup
+        if self.has_shapefile:
+            shapefile_result = self._shapefile_service.lookup(latitude, longitude)
+        
+        # Try KML lookup
+        if self.has_kml:
+            kml_result = self._kml_service.lookup(latitude, longitude, contest=contest)
+        
+        # Combine results
+        if shapefile_result and kml_result:
+            return UnifiedCountyResult(
+                county_name=kml_result.county_name or shapefile_result.contest_name,
+                state_abbrev=shapefile_result.state_abbrev,
+                fips=shapefile_result.fips,
+                state_fips=shapefile_result.state_fips,
+                state_name=shapefile_result.state_name,
+                contest_abbreviation=kml_result.abbreviation,
+                contest=kml_result.contest,
+            )
+        elif kml_result:
+            # KML only - derive state from abbreviation prefix if possible
+            state = self._infer_state_from_kml(kml_result)
+            return UnifiedCountyResult(
+                county_name=kml_result.county_name,
+                state_abbrev=state,
+                contest_abbreviation=kml_result.abbreviation,
+                contest=kml_result.contest,
+            )
+        elif shapefile_result:
+            # Shapefile only
+            return UnifiedCountyResult(
+                county_name=shapefile_result.contest_name,
+                state_abbrev=shapefile_result.state_abbrev,
+                fips=shapefile_result.fips,
+                state_fips=shapefile_result.state_fips,
+                state_name=shapefile_result.state_name,
+            )
+        
+        return None
+    
+    def lookup_all_contests(self, latitude: float, 
+                            longitude: float) -> List[UnifiedCountyResult]:
+        """
+        Look up ALL matching contest regions for a position.
+        
+        Returns results from every loaded contest that contains the point.
+        Useful for determining which QSO parties a mobile station is
+        eligible for at a given location.
+        """
+        results = []
+        
+        # Get shapefile info (one result)
+        shapefile_result = None
+        if self.has_shapefile:
+            shapefile_result = self._shapefile_service.lookup(latitude, longitude)
+        
+        # Get all KML matches
+        if self.has_kml:
+            kml_results = self._kml_service.lookup_all(latitude, longitude)
+            for kml_result in kml_results:
+                state = ""
+                if shapefile_result:
+                    state = shapefile_result.state_abbrev
+                else:
+                    state = self._infer_state_from_kml(kml_result)
+                
+                results.append(UnifiedCountyResult(
+                    county_name=kml_result.county_name,
+                    state_abbrev=state,
+                    fips=shapefile_result.fips if shapefile_result else None,
+                    state_fips=shapefile_result.state_fips if shapefile_result else None,
+                    state_name=shapefile_result.state_name if shapefile_result else None,
+                    contest_abbreviation=kml_result.abbreviation,
+                    contest=kml_result.contest,
+                ))
+        elif shapefile_result:
+            results.append(UnifiedCountyResult(
+                county_name=shapefile_result.contest_name,
+                state_abbrev=shapefile_result.state_abbrev,
+                fips=shapefile_result.fips,
+                state_fips=shapefile_result.state_fips,
+                state_name=shapefile_result.state_name,
+            ))
+        
+        return results
+    
+    def _infer_state_from_kml(self, kml_info) -> str:
+        """Try to infer state abbreviation from KML contest info."""
+        from modules.kml_lookup import ContestCountyInfo
+        
+        # For 7QP files, abbreviation has state prefix (e.g., WAADA -> WA)
+        if kml_info.contest == "7QP" and len(kml_info.abbreviation) > 3:
+            prefix = kml_info.abbreviation[:2]
+            if prefix in [v[0] for v in STATE_FIPS_MAP.values()]:
+                return prefix
+        
+        # For NEWE (New England), abbreviation has state prefix (e.g., CTCAP -> CT)
+        if kml_info.contest == "NEWE" and len(kml_info.abbreviation) > 3:
+            prefix = kml_info.abbreviation[:2]
+            if prefix in [v[0] for v in STATE_FIPS_MAP.values()]:
+                return prefix
+        
+        # For state-specific QSO parties, derive from contest name
+        contest_to_state = {
+            "OKQP": "OK", "TQP": "TX", "CQP": "CA", "FQP": "FL",
+            "GAQP": "GA", "INQP": "IN", "IAQP": "IA", "KSQP": "KS",
+            "KYQP": "KY", "LAQP": "LA", "MIQP": "MI", "MNQP": "MN",
+            "MOQP": "MO", "NEQP": "NE", "OHQP": "OH", "PAQP": "PA",
+            "SCQP": "SC", "TNQP": "TN", "VAQP": "VA", "WIQP": "WI",
+            "ALQP": "AL", "AZQP": "AZ", "ARQP": "AR", "COQP": "CO",
+            "CTQP": "CT", "DEQP": "DE", "HIQP": "HI", "IDQP": "ID",
+            "ILQP": "IL", "MEQP": "ME", "MDQP": "MD", "MAQP": "MA",
+            "MSQP": "MS", "MTQP": "MT", "NVQP": "NV", "NHQP": "NH",
+            "NJQP": "NJ", "NMQP": "NM", "NYQP": "NY", "NCQP": "NC",
+            "NDQP": "ND", "ORQP": "OR", "RIQP": "RI", "SDQP": "SD",
+            "UTQP": "UT", "VTQP": "VT", "WAQP": "WA", "WVQP": "WV",
+            "WYQP": "WY", "ONQP": "ON",
+        }
+        return contest_to_state.get(kml_info.contest, "")
+
+
 if __name__ == "__main__":
     # Test the module
     import time
