@@ -1,4 +1,4 @@
-# N5ZY VHF Contest Co-Pilot
+# N5ZY VHF Contest and State QSO Party Co-Pilot
 
 A Python/tkinter dashboard for amateur radio VHF/UHF contest roving. Integrates GPS tracking, multiple WSJT-X instances, contest logging (N1MM+/N3FJP), battery monitoring, APRS messaging, PSK Reporter, and voice alerts into a single application designed for hands-free mobile operation.
 
