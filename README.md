@@ -1,8 +1,8 @@
-# N5ZY VHF Contest and State QSO Party Co-Pilot
+# N5ZY VHF Contest and State QSO Party Copilot
 
 A Python/tkinter dashboard for amateur radio VHF/UHF contest roving and state QSO party mobile operation. Integrates GPS tracking, multiple WSJT-X instances, contest logging (N1MM+/N3FJP), Victron SmartShunt bluetooth battery monitoring, APRS messaging, PSK Reporter, and voice alerts into a single application designed for hands-free mobile operation.
 
-**Author:** Marcus, N5ZY, with full state QSO coverage and other tweaks by Rus, K2UA
+**Author:** Marcus, N5ZY, with full state QSO party coverage and other tweaks by Rus, K2UA
 
 ## Features
 
