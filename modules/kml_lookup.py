@@ -513,7 +513,8 @@ class KMLLookupService:
             poly = poly.buffer(0)
             if poly.is_valid and not poly.is_empty:
                 return poly
-        except Exception:
+        except (ValueError, TypeError) as e:
+            # Log or track polygon creation failures
             pass
 
         return None
