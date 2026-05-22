@@ -39,8 +39,18 @@ CONTEST_MODES = {
     'qso_party': 'State QSO Party (County)',
     'daily_dx': 'Daily DX (4-char grid)',
 }
-
-LOGGER_NAMES = {'n1mm': 'N1MM+', 'n3fjp': 'N3FJP', 'log4om': 'Log4OM'}
+    try:
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+    except FileNotFoundError:
+        logger.error(f"Settings file not found: {settings_file}")
+        raise SystemExit(f"Settings file not found: {settings_file}. Please create it from the template.")
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in settings file: {e}")
+        raise SystemExit(f"Settings file contains invalid JSON: {e}")
+    except Exception as e:
+        logger.error(f"Error loading settings: {e}")
+        raise SystemExit(f"Failed to load settings: {e}")
 
 # All voice alert category keys (must match VOICE_CATEGORIES in Settings tab)
 ALL_VOICE_CATEGORIES = [
