@@ -24,6 +24,7 @@ from modules.aprs_client import APRSClient
 from modules.qsy_advisor import QSYAdvisor
 from modules.grid_boundary import GridBoundaryMonitor
 from modules.psk_monitor import PSKMonitor
+from modules.rbn_client import RBNClient
 from modules.qsoparty_parser import (
     get_default_qsoparty_path, 
     parse_qsoparty_file, 
@@ -246,6 +247,10 @@ class CoPilotApp:
                 'sms_on_dx2': True,          # New DXCC entity
                 'sms_on_dx3': True,          # New DXCC on band
                 'sms_on_new_grid': False,    # New grid (can be chatty)
+                # RBN (Reverse Beacon Network) settings
+                'rbn_server': 'telnet.reversebeacon.net',
+                'rbn_port': 7000,
+                'rbn_log_file': 'logs/rbn_spots.csv',
             }
             self.save_config()
     
@@ -512,7 +517,11 @@ class CoPilotApp:
         self.psk_tab = self.create_psk_monitor_tab(notebook)
         notebook.add(self.psk_tab, text="PSK Monitor")
         
-        # Tab 5: APRS Messages - send/receive APRS messages
+        # Tab 5: RBN - Reverse Beacon Network CW/RTTY spots
+        self.rbn_tab = self.create_rbn_tab(notebook)
+        notebook.add(self.rbn_tab, text="RBN")
+        
+        # Tab 6: APRS Messages - send/receive APRS messages
         self.aprs_tab = self.create_aprs_messages_tab(notebook)
         notebook.add(self.aprs_tab, text="APRS Msgs")
         
@@ -1846,6 +1855,25 @@ class CoPilotApp:
         ttk.Label(slack_frame, text="Posts: Grid changes, session start/end. Format: \"N5ZY/R now in EM15 on 6m, 2m, 70cm\"",
                  foreground="gray").grid(row=6, column=1, columnspan=2, sticky=tk.W, pady=2)
         
+        # RBN (Reverse Beacon Network) Settings
+        rbn_frame = ttk.LabelFrame(frame, text="RBN (Reverse Beacon Network)", padding=10)
+        rbn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(rbn_frame, text="Telnet Server:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.rbn_server_var = tk.StringVar(value=self.config.get('rbn_server', 'telnet.reversebeacon.net'))
+        ttk.Entry(rbn_frame, textvariable=self.rbn_server_var, width=30).grid(row=0, column=1, sticky=tk.W, pady=2, padx=5)
+
+        ttk.Label(rbn_frame, text="Port:").grid(row=0, column=2, sticky=tk.W, pady=2, padx=(10, 0))
+        self.rbn_port_var = tk.StringVar(value=str(self.config.get('rbn_port', 7000)))
+        ttk.Entry(rbn_frame, textvariable=self.rbn_port_var, width=6).grid(row=0, column=3, sticky=tk.W, pady=2, padx=5)
+
+        ttk.Label(rbn_frame, text="Log File:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.rbn_logfile_var = tk.StringVar(value=self.config.get('rbn_log_file', 'logs/rbn_spots.csv'))
+        ttk.Entry(rbn_frame, textvariable=self.rbn_logfile_var, width=40).grid(row=1, column=1, columnspan=3, sticky=tk.W, pady=2, padx=5)
+
+        ttk.Label(rbn_frame, text="CSV file for persistent spot logging (appended during contest)",
+                 foreground="gray").grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=2)
+
         # Save button
         ttk.Button(frame, text="Save Settings", command=self.save_settings).pack(pady=10)
         
@@ -2758,6 +2786,331 @@ class CoPilotApp:
 
         return frame
     
+    def create_rbn_tab(self, parent):
+        """Create RBN (Reverse Beacon Network) tab with spot display and filters."""
+        frame = ttk.Frame(parent)
+
+        # ── Header: connection status + controls ──
+        header_frame = ttk.Frame(frame)
+        header_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(header_frame, text="Reverse Beacon Network",
+                 font=('Arial', 12, 'bold')).pack(side=tk.LEFT)
+
+        self.rbn_status_var = tk.StringVar(value="Disconnected")
+        ttk.Label(header_frame, textvariable=self.rbn_status_var,
+                 foreground='gray').pack(side=tk.LEFT, padx=20)
+
+        self.rbn_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(header_frame, text="Connect",
+                       variable=self.rbn_enabled_var,
+                       command=self._toggle_rbn).pack(side=tk.RIGHT, padx=5)
+
+        self.rbn_pause_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(header_frame, text="Pause",
+                       variable=self.rbn_pause_var).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(header_frame, text="Clear",
+                  command=self._clear_rbn_spots).pack(side=tk.RIGHT, padx=5)
+
+        # ── Filters frame ──
+        filter_frame = ttk.LabelFrame(frame, text="Filters", padding=5)
+        filter_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
+
+        # Row 1: Callsign filter mode + geography
+        row1 = ttk.Frame(filter_frame)
+        row1.pack(fill=tk.X, pady=2)
+
+        ttk.Label(row1, text="Show:").pack(side=tk.LEFT, padx=(0, 5))
+        self.rbn_call_filter_var = tk.StringVar(value="All")
+        rbn_filter_combo = ttk.Combobox(row1, textvariable=self.rbn_call_filter_var,
+                                         values=["All", "My Call", "Custom List", "QSO Party Log"],
+                                         width=14, state='readonly')
+        rbn_filter_combo.pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(row1, text="Custom calls:").pack(side=tk.LEFT, padx=(15, 5))
+        self.rbn_custom_calls_var = tk.StringVar()
+        ttk.Entry(row1, textvariable=self.rbn_custom_calls_var, width=30).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row1, text="(comma-separated)", foreground='gray').pack(side=tk.LEFT)
+
+        # Geography filter
+        ttk.Label(row1, text="  Geo:").pack(side=tk.LEFT, padx=(15, 5))
+        self.rbn_geo_filter_var = tk.StringVar()
+        ttk.Entry(row1, textvariable=self.rbn_geo_filter_var, width=20).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row1, text="(US states/continents, comma-sep)", foreground='gray').pack(side=tk.LEFT)
+
+        # Row 2: Band checkboxes
+        row2 = ttk.Frame(filter_frame)
+        row2.pack(fill=tk.X, pady=2)
+
+        ttk.Label(row2, text="Bands:").pack(side=tk.LEFT, padx=(0, 5))
+        self.rbn_band_vars = {}
+        rbn_bands = ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m']
+        for band in rbn_bands:
+            var = tk.BooleanVar(value=True)
+            self.rbn_band_vars[band] = var
+            ttk.Checkbutton(row2, text=band, variable=var).pack(side=tk.LEFT, padx=2)
+
+        # ── Spot Treeview ──
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        columns = ('time', 'spotter', 'call', 'freq', 'mode', 'wpm', 'db')
+        self.rbn_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=18)
+
+        self.rbn_tree.heading('time', text='Time')
+        self.rbn_tree.heading('spotter', text='Spotter')
+        self.rbn_tree.heading('call', text='Spotted Call')
+        self.rbn_tree.heading('freq', text='Freq (kHz)')
+        self.rbn_tree.heading('mode', text='Mode')
+        self.rbn_tree.heading('wpm', text='WPM')
+        self.rbn_tree.heading('db', text='dB')
+
+        self.rbn_tree.column('time', width=60)
+        self.rbn_tree.column('spotter', width=80)
+        self.rbn_tree.column('call', width=90)
+        self.rbn_tree.column('freq', width=80)
+        self.rbn_tree.column('mode', width=50)
+        self.rbn_tree.column('wpm', width=45)
+        self.rbn_tree.column('db', width=45)
+
+        # SNR color tags (10 dB steps)
+        self.rbn_tree.tag_configure('snr_0', foreground='gray')       # 0-9 dB
+        self.rbn_tree.tag_configure('snr_10', foreground='#4488ff')   # 10-19 dB (blue)
+        self.rbn_tree.tag_configure('snr_20', foreground='#22aa22')   # 20-29 dB (green)
+        self.rbn_tree.tag_configure('snr_30', foreground='#cc9900')   # 30-39 dB (gold)
+        self.rbn_tree.tag_configure('snr_40', foreground='#dd2222')   # 40+ dB (red)
+
+        rbn_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.rbn_tree.yview)
+        self.rbn_tree.configure(yscrollcommand=rbn_scroll.set)
+        self.rbn_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        rbn_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # ── Bottom status ──
+        bottom_frame = ttk.Frame(frame)
+        bottom_frame.pack(fill=tk.X, padx=5, pady=2)
+
+        self.rbn_spot_count_var = tk.StringVar(value="Spots: 0")
+        ttk.Label(bottom_frame, textvariable=self.rbn_spot_count_var,
+                 font=('Arial', 9, 'bold')).pack(side=tk.LEFT)
+
+        self.rbn_file_var = tk.StringVar(value="")
+        ttk.Label(bottom_frame, textvariable=self.rbn_file_var,
+                 foreground='gray').pack(side=tk.RIGHT)
+
+        # ── Internal state ──
+        self.rbn_client = None
+        self._rbn_spot_count = 0
+        self._rbn_buffer = []         # Spots waiting to be written to file
+        self._rbn_file_path = self.config.get('rbn_log_file', 'logs/rbn_spots.csv')
+        self._rbn_file_header_written = False
+        self._rbn_flush_interval = 30  # seconds between file flushes
+        self._rbn_last_flush = 0
+
+        return frame
+
+    def _toggle_rbn(self):
+        """Toggle RBN connection on/off."""
+        enabled = self.rbn_enabled_var.get()
+
+        if enabled:
+            self._start_rbn()
+        else:
+            self._stop_rbn()
+
+    def _start_rbn(self):
+        """Start RBN client connection."""
+        server = self.config.get('rbn_server', 'telnet.reversebeacon.net')
+        port = self.config.get('rbn_port', 7000)
+        my_call = self.config.get('my_call', 'N0CALL')
+
+        self.rbn_client = RBNClient(
+            server=server,
+            port=port,
+            my_call=my_call,
+            spot_callback=self._on_rbn_spot
+        )
+        self.rbn_client.start()
+        self.rbn_status_var.set(f"Connecting to {server}:{port}...")
+        self._rbn_file_path = self.config.get('rbn_log_file', 'logs/rbn_spots.csv')
+        self.rbn_file_var.set(f"Log: {self._rbn_file_path}")
+        self.add_alert(f"RBN: Connecting to {server}:{port}")
+
+        # Schedule status check
+        self.root.after(3000, self._update_rbn_status)
+
+    def _stop_rbn(self):
+        """Stop RBN client connection."""
+        if self.rbn_client:
+            self.rbn_client.stop()
+            self.rbn_client = None
+        self.rbn_status_var.set("Disconnected")
+        self.add_alert("RBN: Disconnected")
+
+        # Flush any remaining buffer to file
+        self._flush_rbn_buffer()
+
+    def _update_rbn_status(self):
+        """Update RBN connection status display."""
+        if self.rbn_client and self.rbn_client.connected:
+            self.rbn_status_var.set(f"Connected | {self._rbn_spot_count} spots")
+        elif self.rbn_client and self.rbn_client.running:
+            self.rbn_status_var.set("Connecting...")
+            self.root.after(3000, self._update_rbn_status)
+
+    def _on_rbn_spot(self, spot):
+        """Handle incoming RBN spot (called from RBN client thread)."""
+        # Schedule UI update on main thread
+        self.root.after(0, lambda: self._process_rbn_spot(spot))
+
+    def _process_rbn_spot(self, spot):
+        """Process and display an RBN spot (main thread)."""
+        # Apply filters
+        if not self._rbn_passes_filter(spot):
+            return
+
+        self._rbn_spot_count += 1
+        self.rbn_spot_count_var.set(f"Spots: {self._rbn_spot_count}")
+
+        # Add to file buffer (always, before display filtering)
+        self._rbn_buffer.append(spot)
+
+        # Check if paused
+        if self.rbn_pause_var.get():
+            return
+
+        # Determine SNR color tag
+        snr = spot.get('snr_db', 0)
+        if snr >= 40:
+            tag = 'snr_40'
+        elif snr >= 30:
+            tag = 'snr_30'
+        elif snr >= 20:
+            tag = 'snr_20'
+        elif snr >= 10:
+            tag = 'snr_10'
+        else:
+            tag = 'snr_0'
+
+        # Insert at top of treeview
+        self.rbn_tree.insert('', 0, values=(
+            spot.get('time_utc', ''),
+            spot.get('spotter', ''),
+            spot.get('spotted_call', ''),
+            f"{spot.get('freq_khz', 0):.1f}",
+            spot.get('mode', ''),
+            spot.get('speed_wpm', ''),
+            spot.get('snr_db', ''),
+        ), tags=(tag,))
+
+        # Trim to 200 rows
+        children = self.rbn_tree.get_children()
+        if len(children) > 200:
+            for child in children[200:]:
+                self.rbn_tree.delete(child)
+
+        # Periodic flush to file
+        import time as _time
+        now = _time.time()
+        if now - self._rbn_last_flush >= self._rbn_flush_interval:
+            self._flush_rbn_buffer()
+            self._rbn_last_flush = now
+
+    def _rbn_passes_filter(self, spot):
+        """Check if a spot passes current filter settings."""
+        # Band filter
+        band = spot.get('band', '')
+        if band and band in self.rbn_band_vars:
+            if not self.rbn_band_vars[band].get():
+                return False
+
+        # Callsign filter
+        filter_mode = self.rbn_call_filter_var.get()
+        spotted_call = spot.get('spotted_call', '').upper()
+
+        if filter_mode == "My Call":
+            my_call = self.config.get('my_call', '').upper()
+            if spotted_call != my_call:
+                return False
+
+        elif filter_mode == "Custom List":
+            custom = self.rbn_custom_calls_var.get().upper()
+            if custom:
+                call_list = {c.strip() for c in custom.split(',') if c.strip()}
+                if spotted_call not in call_list:
+                    return False
+
+        elif filter_mode == "QSO Party Log":
+            # Filter to calls we've worked that are in the QSO party state
+            if spotted_call not in self.worked_calls:
+                return False
+
+        # Geography filter
+        geo_filter = self.rbn_geo_filter_var.get().strip().upper()
+        if geo_filter:
+            # Geography filtering requires cty.dat lookup
+            # For now, pass all if no cty_lookup available
+            if hasattr(self, 'cty_lookup') and self.cty_lookup and hasattr(self.cty_lookup, '_loaded') and self.cty_lookup._loaded:
+                geo_list = {g.strip() for g in geo_filter.split(',') if g.strip()}
+                if geo_list:
+                    entity = self.cty_lookup.lookup(spotted_call)
+                    if entity:
+                        # Check US state or continent
+                        station_match = False
+                        # Check if entity has a US state
+                        if hasattr(entity, 'state') and entity.state:
+                            if entity.state.upper() in geo_list:
+                                station_match = True
+                        # Check continent
+                        if hasattr(entity, 'continent') and entity.continent:
+                            if entity.continent.upper() in geo_list:
+                                station_match = True
+                        if not station_match:
+                            return False
+
+        return True
+
+    def _flush_rbn_buffer(self):
+        """Write buffered spots to the log file."""
+        if not self._rbn_buffer:
+            return
+
+        import os
+
+        file_path = self._rbn_file_path
+        if not file_path:
+            self._rbn_buffer.clear()
+            return
+
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(file_path) if os.path.dirname(file_path) else '.', exist_ok=True)
+
+            # Write header if new file
+            write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
+
+            with open(file_path, 'a', encoding='utf-8') as f:
+                if write_header:
+                    f.write("timestamp,time_utc,spotter,spotted_call,freq_khz,mode,snr_db,speed_wpm,band,info\n")
+
+                for spot in self._rbn_buffer:
+                    ts = spot.get('timestamp', '')
+                    if hasattr(ts, 'strftime'):
+                        ts = ts.strftime('%Y-%m-%d %H:%M:%S')
+                    f.write(f"{ts},{spot.get('time_utc','')},{spot.get('spotter','')},{spot.get('spotted_call','')},"
+                            f"{spot.get('freq_khz', 0):.1f},{spot.get('mode','')},{spot.get('snr_db', 0)},"
+                            f"{spot.get('speed_wpm', 0)},{spot.get('band','')},{spot.get('info','')}\n")
+
+            self._rbn_buffer.clear()
+
+        except Exception as e:
+            print(f"RBN: Error writing log file: {e}")
+
+    def _clear_rbn_spots(self):
+        """Clear the RBN spot display."""
+        for item in self.rbn_tree.get_children():
+            self.rbn_tree.delete(item)
+
     def _toggle_psk_monitor(self):
         """Toggle PSK Reporter monitoring on/off"""
         enabled = self.psk_enabled_var.get()
@@ -7826,6 +8179,12 @@ class CoPilotApp:
                 slack_webhooks.append({'name': name, 'url': url})
         self.config['slack_webhooks'] = slack_webhooks
         
+        # RBN settings
+        if hasattr(self, 'rbn_server_var'):
+            self.config['rbn_server'] = self.rbn_server_var.get().strip()
+            self.config['rbn_port'] = int(self.rbn_port_var.get())
+            self.config['rbn_log_file'] = self.rbn_logfile_var.get().strip()
+
         # WSJT-X instances - build from name/path/port vars
         new_instances = []
         for i in range(4):
