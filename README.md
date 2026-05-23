@@ -13,7 +13,7 @@ A Python/tkinter dashboard for amateur radio VHF/UHF contest roving and state QS
 - **SMS Notifications** - Twilio SMS alerts for DX/New Grid, rover status broadcasts to subscriber list
 - **APRS** - APRS-IS messaging, position beaconing, nearby mobile station alerts with voice announcements
 - **PSK Reporter** - Band opening detection, Sporadic-E alerts, multi-hop Sp-E "PULL OVER!" alerts, priority alert aging
-- **RBN** - Reverse Beacon Network support in a dedicated tab with row coloring by SNR. Filters are supported by call sign, band (160-2 meters), and continent. The last 200 RBN spots ate shown in the current view and the window can be paused and scrolled. All RBN spots are spooled to a user-configurable CSV file for later analysis. RBN connection is optional and can be enabled by a checkbox. It is disabled by default. 
+- **RBN** - Reverse Beacon Network support in a dedicated tab with row coloring by SNR. Filters are supported by call sign, band (160-2 meters), and continent. The 200 most recent RBN spots are shown in the current view and the window can be paused and scrolled. All RBN spots are spooled to a user-configurable CSV file for later analysis. RBN connection is optional and can be enabled by a checkbox. It is disabled by default. 
 - **Priority Station Alerts** - DX! priority stations, DX2 (new DXCC entity), DX3 (new DXCC on band) with LoTW/cty.dat lookup, dynamic detection from ALL.TXT decodes
 - **QSY Advisor** - Station database to find who's active on which bands
 - **Voice Alerts** - Hands-free announcements for grid changes, QSOs, band openings, nearby stations
