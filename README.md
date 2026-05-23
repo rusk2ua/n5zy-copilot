@@ -92,7 +92,7 @@ The traditional US Census TIGER/Line shapefile provides authoritative county bou
 
 ### KML Contest Boundaries (Exchange-based)
 
-Contest-specific KML boundary files provide the correct **contest exchange abbreviations** used by each QSO party. These files originate from the [qsopartytracker](https://github.com/geoffeg/qsopartytracker) project by Geoff, KE5FPG, and cover all active state QSO parties and multi-state events.
+Contest-specific KML boundary files provide the correct **contest exchange abbreviations** used by each QSO party. These files originate from the [qsopartytracker](https://github.com/geoffeg/qsopartytracker) project by Geoff, KC8FDU, and cover all active state QSO parties and multi-state events.
 
 - **Data**: `data/kml_maps/` (60 KML files)
 - **Output**: County/region name + contest exchange abbreviation (e.g., `Canadian` → `CAN` for OKQP)
