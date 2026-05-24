@@ -15,7 +15,7 @@ from datetime import datetime
 
 # Import our modules
 from modules.credential_store import encrypt_config, decrypt_config, needs_migration
-from modules.gps_monitor import GPSMonitor
+from modules.gps_monitor import GPSMonitor, get_default_gps_port, detect_gps_port, list_serial_ports
 from modules.battery_monitor import BatteryMonitor
 from modules.radio_updater import RadioUpdater
 from modules.log_monitor import LogMonitor
@@ -181,7 +181,7 @@ class CoPilotApp:
         else:
             # Default configuration
             self.config = {
-                'gps_port': 'COM3',
+                'gps_port': get_default_gps_port(),
                 'gps_baudrate': None,         # None = auto-detect, or 4800/9600/19200/38400
                 'gps_update_rate_hz': 1,      # NMEA update rate (1, 2, 5, 10 Hz)
                 'gps_time_sync_enabled': False,

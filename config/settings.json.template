@@ -1,6 +1,7 @@
 {
     "my_call": "",
-    "gps_port": "COM3",
+    "gps_port": "auto",
+    "gps_port_comment": "Use 'auto' for auto-detection, 'COM3' on Windows, or '/dev/cu.usbserial-XXX' on macOS, '/dev/ttyUSB0' on Linux",
     "victron_address": "",
     "victron_key": "",
     "contest_mode": "vhf",
