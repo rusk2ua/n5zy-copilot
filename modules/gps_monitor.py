@@ -187,7 +187,10 @@ def detect_gps_port():
     
     ports = serial.tools.list_ports.comports()
     
-    # First pass: look for ports with GPS-specific identifiers
+            if self.gps_process:
+                self.gps_process.terminate()
+                self.gps_process.wait()
+                self.gps_process = None
     for port in ports:
         desc_lower = (port.description or '').lower()
         hwid_lower = (port.hwid or '').lower()
