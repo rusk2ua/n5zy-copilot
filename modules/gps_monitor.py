@@ -163,12 +163,11 @@ def get_default_gps_port():
     """Return a platform-appropriate default GPS port name.
     
     Returns:
-        str: 'COM3' on Windows, 'auto' on macOS/Linux (triggers auto-detection)
-    """
-    system = platform.system()
-    if system == 'Windows':
-        return 'COM3'
-    else:
+                        try:
+                            with open(self.flight_path_file, 'a') as f:
+                                f.write(f"{lat},{lon},{alt},{timestamp}\n")
+                        except IOError as e:
+                            logger.error(f"Failed to write GPS data to file: {e}")
         return 'auto'
 
 
