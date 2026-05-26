@@ -1,15 +1,29 @@
 """
 GPS Monitor Module
 Reads GPS data from serial port and calculates Maidenhead grid square
+
+Cross-platform support:
+  - Windows: COM ports (e.g., 'COM3')
+  - macOS: /dev/cu.usbserial-*, /dev/cu.usbmodem-*, /dev/tty.usbserial-*
+  - Linux: /dev/ttyUSB*, /dev/ttyACM*
+
+Port auto-detection: set gps_port to "auto" in settings.json to scan for GPS devices.
 """
 
 import serial
+import serial.tools.list_ports
 import pynmea2
 import threading
 import time
 import struct
-import ctypes
+import platform
+import os
+import subprocess
 from datetime import datetime, timezone
+
+# Only import ctypes on Windows (used for SetSystemTime)
+if platform.system() == 'Windows':
+    import ctypes
 
 # Common NMEA baud rates to try during auto-detection, ordered by likelihood
 NMEA_BAUD_RATES = [9600, 4800, 19200, 38400, 57600, 115200]
@@ -144,6 +158,101 @@ def latlon_to_grid(lat, lon):
     
     return grid
 
+
+def get_default_gps_port():
+    """Return a platform-appropriate default GPS port name.
+    
+    Returns:
+                        try:
+                            with open(self.flight_path_file, 'a') as f:
+                                f.write(f"{lat},{lon},{alt},{timestamp}\n")
+                        except IOError as e:
+                            logger.error(f"Failed to write GPS data to file: {e}")
+        return 'auto'
+
+
+def detect_gps_port():
+    """Auto-detect the GPS serial port by scanning available ports.
+    
+    Looks for common GPS USB chipsets (u-blox, Prolific, FTDI, SiLabs CP210x)
+    and returns the first matching port.
+    
+    Returns:
+        str: port device path (e.g., '/dev/cu.usbserial-0001' or 'COM3'), or None if not found
+    """
+    # Keywords that indicate a GPS/serial USB adapter
+    gps_keywords = ['gps', 'u-blox', 'ublox', 'nmea', 'gnss']
+    serial_adapter_keywords = ['prolific', 'ftdi', 'cp210', 'ch340', 'ch9102', 'usbserial', 'usbmodem']
+    
+    ports = serial.tools.list_ports.comports()
+    
+            if self.gps_process:
+                self.gps_process.terminate()
+                self.gps_process.wait()
+                self.gps_process = None
+    for port in ports:
+        desc_lower = (port.description or '').lower()
+        hwid_lower = (port.hwid or '').lower()
+        mfg_lower = (port.manufacturer or '').lower()
+        
+        for keyword in gps_keywords:
+            if keyword in desc_lower or keyword in hwid_lower or keyword in mfg_lower:
+                print(f"GPS: Auto-detected GPS device on {port.device} ({port.description})")
+                return port.device
+    
+    # Second pass: look for common USB-to-serial adapters (often used with GPS)
+    for port in ports:
+        desc_lower = (port.description or '').lower()
+        hwid_lower = (port.hwid or '').lower()
+        mfg_lower = (port.manufacturer or '').lower()
+        
+        for keyword in serial_adapter_keywords:
+            if keyword in desc_lower or keyword in hwid_lower or keyword in mfg_lower:
+                print(f"GPS: Found USB serial adapter on {port.device} ({port.description})")
+                return port.device
+    
+    # Third pass (macOS/Linux): look for /dev/cu.* or /dev/ttyUSB* or /dev/ttyACM* ports
+    system = platform.system()
+    if system != 'Windows':
+        for port in ports:
+            device = port.device
+            if any(pattern in device for pattern in ['/dev/cu.usb', '/dev/ttyUSB', '/dev/ttyACM']):
+                print(f"GPS: Found serial port {device} ({port.description})")
+                return device
+    
+    # Nothing found
+    if ports:
+        port_list = ', '.join(p.device for p in ports)
+        print(f"GPS: Auto-detect found no GPS device. Available ports: {port_list}")
+    else:
+        print(f"GPS: Auto-detect found no serial ports at all")
+        if system == 'Darwin':
+            print(f"  Hint: On macOS, plug in your GPS USB dongle and look for /dev/cu.usbserial-*")
+            print(f"  You may need to install a driver for Prolific/CH340 chipsets")
+        elif system == 'Linux':
+            print(f"  Hint: On Linux, check that your user is in the 'dialout' group:")
+            print(f"        sudo usermod -a -G dialout $USER")
+    
+    return None
+
+
+def list_serial_ports():
+    """List all available serial ports with descriptions.
+    
+    Returns:
+        list of dict: [{'device': '/dev/cu.usbserial-0001', 'description': '...', 'hwid': '...'}]
+    """
+    ports = serial.tools.list_ports.comports()
+    return [
+        {
+            'device': p.device,
+            'description': p.description or 'Unknown',
+            'manufacturer': p.manufacturer or '',
+            'hwid': p.hwid or '',
+        }
+        for p in sorted(ports)
+    ]
+
 class GPSMonitor:
     def __init__(self, port, callback, grid_precision=4, lock_callback=None,
                  baudrate=None, status_callback=None):
@@ -151,14 +260,25 @@ class GPSMonitor:
         Initialize GPS monitor
 
         Args:
-            port: COM port string (e.g., 'COM3')
+            port: Serial port string (e.g., 'COM3', '/dev/cu.usbserial-0001', or 'auto')
             callback: Function to call with (grid, lat, lon) when position updates
             grid_precision: 4 or 6 character grid precision (default 4 for VHF contests)
             lock_callback: Function to call with (has_lock, message) when lock status changes
             baudrate: Desired baud rate (None = auto-detect on connect)
             status_callback: Function to call with (status_dict) for baud/rate status updates
         """
-        self.port = port
+        # Handle 'auto' port detection
+        if port and port.lower() == 'auto':
+            detected = detect_gps_port()
+            if detected:
+                self.port = detected
+                print(f"GPS: Using auto-detected port: {self.port}")
+            else:
+                # Store 'auto' so _monitor_loop can retry detection
+                self.port = port
+                print(f"GPS: No port detected yet, will retry...")
+        else:
+            self.port = port
         self.callback = callback
         self.lock_callback = lock_callback
         self.status_callback = status_callback
@@ -424,12 +544,27 @@ class GPSMonitor:
         """Main monitoring loop (runs in separate thread)"""
         while self.running:
             try:
+                # Resolve 'auto' port if needed
+                active_port = self.port
+                if active_port and active_port.lower() == 'auto':
+                    detected = detect_gps_port()
+                    if detected:
+                        active_port = detected
+                        self.port = detected
+                        print(f"GPS: Auto-detected port: {active_port}")
+                    else:
+                        print(f"GPS: No GPS port found, retrying in 5 seconds...")
+                        if self.status_callback:
+                            self.status_callback({'connected': False, 'error': 'No GPS port detected'})
+                        time.sleep(5)
+                        continue
+
                 # Determine baud rate
                 active_rate = self.baudrate  # May be None (auto-detect)
 
                 if active_rate is None:
-                    print(f"GPS: Auto-detecting baud rate on {self.port}...")
-                    active_rate = self.auto_detect_baudrate()
+                    print(f"GPS: Auto-detecting baud rate on {active_port}...")
+                    active_rate = self.auto_detect_baudrate(active_port)
 
                     if active_rate is None:
                         print(f"GPS: Auto-detect failed, defaulting to 9600")
@@ -439,8 +574,8 @@ class GPSMonitor:
                     self.detected_baudrate = active_rate
 
                 # Open serial connection at determined baud rate
-                with serial.Serial(self.port, baudrate=active_rate, timeout=1) as ser:
-                    print(f"GPS: Connected to {self.port} at {active_rate} baud")
+                with serial.Serial(active_port, baudrate=active_rate, timeout=1) as ser:
+                    print(f"GPS: Connected to {active_port} at {active_rate} baud")
                     self.detected_baudrate = active_rate
                     had_fix = False  # Track if we previously had a fix
 
@@ -448,7 +583,7 @@ class GPSMonitor:
                         self.status_callback({
                             'connected': True,
                             'detected_rate': active_rate,
-                            'port': self.port
+                            'port': active_port
                         })
                     
                     while self.running:
@@ -576,7 +711,7 @@ class GPSMonitor:
                             time.sleep(1)
             
             except serial.SerialException as e:
-                print(f"GPS: Could not open {self.port}: {e}")
+                print(f"GPS: Could not open {active_port}: {e}")
                 # If saved baud rate fails, try auto-detect on next attempt
                 if self.baudrate is not None:
                     print(f"GPS: Will try auto-detect on next attempt")
@@ -590,12 +725,23 @@ class GPSMonitor:
     
     @staticmethod
     def is_admin():
-        """Check if the current process is running with Administrator privileges."""
-        try:
-            return ctypes.windll.shell32.IsUserAnAdmin() != 0
-        except (AttributeError, OSError):
-            # Not on Windows or API not available
-            return False
+        """Check if the current process has privileges to set the system clock.
+        
+        - Windows: checks for Administrator privileges via shell32
+        - macOS/Linux: checks for root (euid == 0)
+        """
+        system = platform.system()
+        if system == 'Windows':
+            try:
+                return ctypes.windll.shell32.IsUserAnAdmin() != 0
+            except (AttributeError, OSError):
+                return False
+        else:
+            # macOS and Linux: root required for setting system clock
+            try:
+                return os.geteuid() == 0
+            except AttributeError:
+                return False
 
     def _collect_offset_samples(self, num_samples=5, interval_s=3.0):
         """Collect multiple GPS-vs-system offset readings for averaging.
@@ -746,7 +892,7 @@ class GPSMonitor:
             }
 
         try:
-            # Re-snapshot GPS time right before SetSystemTime (use fresh reading,
+            # Re-snapshot GPS time right before setting system clock (use fresh reading,
             # not the one from ~12 seconds ago during sample collection)
             gps_utc = self.gps_datetime_utc
             if gps_utc is None:
@@ -757,44 +903,106 @@ class GPSMonitor:
                     'satellites': self.satellites,
                 }
 
-            # Build SYSTEMTIME structure for SetSystemTime
-            # SYSTEMTIME: WORD wYear, wMonth, wDayOfWeek, wDay,
-            #             wHour, wMinute, wSecond, wMilliseconds
-            class SYSTEMTIME(ctypes.Structure):
-                _fields_ = [
-                    ('wYear', ctypes.c_ushort),
-                    ('wMonth', ctypes.c_ushort),
-                    ('wDayOfWeek', ctypes.c_ushort),
-                    ('wDay', ctypes.c_ushort),
-                    ('wHour', ctypes.c_ushort),
-                    ('wMinute', ctypes.c_ushort),
-                    ('wSecond', ctypes.c_ushort),
-                    ('wMilliseconds', ctypes.c_ushort),
-                ]
+            system = platform.system()
+            
+            if system == 'Windows':
+                # Windows: Use SetSystemTime API
+                # SYSTEMTIME: WORD wYear, wMonth, wDayOfWeek, wDay,
+                #             wHour, wMinute, wSecond, wMilliseconds
+                class SYSTEMTIME(ctypes.Structure):
+                    _fields_ = [
+                        ('wYear', ctypes.c_ushort),
+                        ('wMonth', ctypes.c_ushort),
+                        ('wDayOfWeek', ctypes.c_ushort),
+                        ('wDay', ctypes.c_ushort),
+                        ('wHour', ctypes.c_ushort),
+                        ('wMinute', ctypes.c_ushort),
+                        ('wSecond', ctypes.c_ushort),
+                        ('wMilliseconds', ctypes.c_ushort),
+                    ]
 
-            st = SYSTEMTIME()
-            st.wYear = gps_utc.year
-            st.wMonth = gps_utc.month
-            st.wDayOfWeek = gps_utc.weekday()  # Monday=0
-            st.wDay = gps_utc.day
-            st.wHour = gps_utc.hour
-            st.wMinute = gps_utc.minute
-            st.wSecond = gps_utc.second
-            # Use microseconds from GPS time if available
-            st.wMilliseconds = gps_utc.microsecond // 1000
+                st = SYSTEMTIME()
+                st.wYear = gps_utc.year
+                st.wMonth = gps_utc.month
+                st.wDayOfWeek = gps_utc.weekday()  # Monday=0
+                st.wDay = gps_utc.day
+                st.wHour = gps_utc.hour
+                st.wMinute = gps_utc.minute
+                st.wSecond = gps_utc.second
+                # Use microseconds from GPS time if available
+                st.wMilliseconds = gps_utc.microsecond // 1000
 
-            result = ctypes.windll.kernel32.SetSystemTime(ctypes.byref(st))
-            if result == 0:
-                err_code = ctypes.GetLastError()
-                return {
-                    'success': False,
-                    'error': f'SetSystemTime failed (error {err_code})',
-                    'offset_ms': offset_ms,
-                    'samples': len(samples),
-                    'gps_time': gps_utc,
-                    'fix_quality': self.gps_fix_quality,
-                    'satellites': self.satellites,
-                }
+                result = ctypes.windll.kernel32.SetSystemTime(ctypes.byref(st))
+                if result == 0:
+                    err_code = ctypes.GetLastError()
+                    return {
+                        'success': False,
+                        'error': f'SetSystemTime failed (error {err_code})',
+                        'offset_ms': offset_ms,
+                        'samples': len(samples),
+                        'gps_time': gps_utc,
+                        'fix_quality': self.gps_fix_quality,
+                        'satellites': self.satellites,
+                    }
+
+            elif system == 'Darwin':
+                # macOS: Use systemsetup or date command (requires sudo/root)
+                # Format: date MMDDhhmmYY.ss (in UTC)
+                date_str = gps_utc.strftime('%m%d%H%M%Y.%S')
+                try:
+                    result = subprocess.run(
+                        ['date', '-u', date_str],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode != 0:
+                        return {
+                            'success': False,
+                            'error': f'date command failed: {result.stderr.strip()}',
+                            'offset_ms': offset_ms,
+                            'samples': len(samples),
+                            'gps_time': gps_utc,
+                            'fix_quality': self.gps_fix_quality,
+                            'satellites': self.satellites,
+                        }
+                except subprocess.TimeoutExpired:
+                    return {
+                        'success': False,
+                        'error': 'date command timed out',
+                        'offset_ms': offset_ms,
+                        'samples': len(samples),
+                        'gps_time': gps_utc,
+                        'fix_quality': self.gps_fix_quality,
+                        'satellites': self.satellites,
+                    }
+
+            else:
+                # Linux: Use date -s command (requires root)
+                date_str = gps_utc.strftime('%Y-%m-%d %H:%M:%S')
+                try:
+                    result = subprocess.run(
+                        ['date', '-u', '-s', date_str],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode != 0:
+                        return {
+                            'success': False,
+                            'error': f'date command failed: {result.stderr.strip()}',
+                            'offset_ms': offset_ms,
+                            'samples': len(samples),
+                            'gps_time': gps_utc,
+                            'fix_quality': self.gps_fix_quality,
+                            'satellites': self.satellites,
+                        }
+                except subprocess.TimeoutExpired:
+                    return {
+                        'success': False,
+                        'error': 'date command timed out',
+                        'offset_ms': offset_ms,
+                        'samples': len(samples),
+                        'gps_time': gps_utc,
+                        'fix_quality': self.gps_fix_quality,
+                        'satellites': self.satellites,
+                    }
 
             self._last_sync_monotonic = time.monotonic()
 
