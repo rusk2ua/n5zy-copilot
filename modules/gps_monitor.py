@@ -163,12 +163,9 @@ def get_default_gps_port():
     """Return a platform-appropriate default GPS port name.
     
     Returns:
-                        try:
-                            with open(self.flight_path_file, 'a') as f:
-                                f.write(f"{lat},{lon},{alt},{timestamp}\n")
-                        except IOError as e:
-                            logger.error(f"Failed to write GPS data to file: {e}")
-        return 'auto'
+        str: 'auto' to indicate automatic port detection should be used.
+    """
+    return 'auto'
 
 
 def detect_gps_port():
@@ -186,10 +183,6 @@ def detect_gps_port():
     
     ports = serial.tools.list_ports.comports()
     
-            if self.gps_process:
-                self.gps_process.terminate()
-                self.gps_process.wait()
-                self.gps_process = None
     for port in ports:
         desc_lower = (port.description or '').lower()
         hwid_lower = (port.hwid or '').lower()
