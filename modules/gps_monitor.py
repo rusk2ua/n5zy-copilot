@@ -647,11 +647,19 @@ class GPSMonitor:
                                     # Store full 6-char grid for GPS Logger
                                     self.grid_6char = full_grid
                                     
-                                    # Only callback if grid changed (at configured precision)
+                                    # Log when grid changes
                                     if grid != self.current_grid:
                                         self.current_grid = grid
                                         print(f"GPS: Position update - {grid} ({lat:.6f}, {lon:.6f})")
-                                        self.callback(grid, lat, lon)
+
+                                    # !!! DO NOT REVERT !!!
+                                    # Always callback so county tracking runs on every GPS fix,
+                                    # not just when the grid changes. County boundaries don't
+                                    # align with grid boundaries — without this, MY_CNTY and
+                                    # RoverQTH only update on grid transitions, stamping wrong
+                                    # county on every QSO in between.
+                                    # !!! DO NOT REVERT !!!
+                                    self.callback(grid, lat, lon)
                                 else:
                                     if had_fix:
                                         # Lost fix
