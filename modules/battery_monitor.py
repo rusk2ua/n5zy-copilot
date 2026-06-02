@@ -44,13 +44,19 @@ class BatteryMonitor:
         - AABBCCDDEEFF -> AA:BB:CC:DD:EE:FF
         - AA-BB-CC-DD-EE-FF -> AA:BB:CC:DD:EE:FF
         - aa:bb:cc:dd:ee:ff -> AA:BB:CC:DD:EE:FF (uppercase)
+        - macOS UUIDs (12345678-1234-1234-1234-123456789ABC) are left as-is
         """
+        # Check if this is a macOS-style UUID (36 chars with dashes)
+        if len(address) == 36 and address.count('-') == 4:
+            print(f"Battery: Using macOS BLE UUID: {address}")
+            return address.upper()
+        
         # Remove any existing separators
         clean = address.replace(':', '').replace('-', '').replace(' ', '').upper()
         
         # Check if it's a valid length (12 hex characters)
         if len(clean) != 12:
-            print(f"Battery: Warning - MAC address '{address}' doesn't look valid (should be 12 hex chars)")
+            print(f"Battery: Warning - MAC address '{address}' doesn't look valid (should be 12 hex chars or macOS UUID)")
             return address  # Return as-is, let it fail later with better error
         
         # Add colons every 2 characters
@@ -196,23 +202,70 @@ class BatteryMonitor:
     
     @staticmethod
     async def discover_devices():
-        """Discover available Victron devices"""
+        """Discover available Victron devices via BLE scan.
+        
+        Scans for BLE devices and identifies likely Victron devices by name
+        and manufacturer data. Also prints ALL discovered devices to help
+        identify SmartShunts that may advertise under unexpected names.
+        """
         try:
             from bleak import BleakScanner
+            import platform
             
-            print("Battery: Scanning for Bluetooth devices...")
-            devices = await BleakScanner.discover(timeout=10.0)
+            print("Battery: Scanning for Bluetooth devices (15 seconds)...")
+            if platform.system() == 'Darwin':
+                print("Battery: NOTE - macOS uses UUIDs instead of MAC addresses.")
+                print("Battery:   You'll need to use the UUID shown here as your victron_address.")
+            
+            devices = await BleakScanner.discover(timeout=15.0, return_adv=True)
             
             victron_devices = []
-            for device in devices:
-                if device.name and ('Smart' in device.name or 'Victron' in device.name):
+            other_devices = []
+            
+            # Victron manufacturer ID
+            victron_mfg_id = 0x02E1  # 737 decimal
+            
+            for address, (device, adv_data) in devices.items():
+                name = device.name or adv_data.local_name or '(unnamed)'
+                
+                # Check if device has Victron manufacturer data
+                has_victron_mfg = victron_mfg_id in (adv_data.manufacturer_data or {})
+                
+                # Match by name OR by Victron manufacturer data
+                is_victron = (
+                    has_victron_mfg or
+                    (device.name and any(kw in device.name.lower() for kw in 
+                        ['smart', 'victron', 'shunt', 'mppt', 'bmv', 'orion']))
+                )
+                
+                if is_victron:
                     victron_devices.append({
-                        'name': device.name,
-                        'address': device.address
+                        'name': name,
+                        'address': address,
+                        'has_victron_data': has_victron_mfg
                     })
-                    print(f"  Found: {device.name} ({device.address})")
+                    marker = " [HAS VICTRON DATA]" if has_victron_mfg else ""
+                    print(f"  >>> VICTRON: {name} ({address}){marker}")
+                else:
+                    other_devices.append({'name': name, 'address': address})
+            
+            if not victron_devices:
+                print(f"\nBattery: No Victron devices found!")
+                print(f"Battery: Showing all {len(other_devices)} BLE devices discovered:")
+                for dev in sorted(other_devices, key=lambda d: d['name']):
+                    print(f"    {dev['name']} ({dev['address']})")
+                print(f"\nBattery: If your SmartShunt is not listed:")
+                print(f"  1. Make sure it's powered on and in range")
+                print(f"  2. Enable 'Instant Readout' in VictronConnect")
+                print(f"  3. Disconnect VictronConnect (it may hold the BLE connection)")
+                print(f"  4. Try again - BLE advertisements can be intermittent")
+            else:
+                print(f"\nBattery: Found {len(victron_devices)} Victron device(s)")
+                print(f"Battery: Use the address shown above as your 'victron_address' in settings.json")
             
             return victron_devices
         except Exception as e:
             print(f"Battery: Error during discovery: {e}")
+            import traceback
+            traceback.print_exc()
             return []
