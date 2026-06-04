@@ -1,24 +1,28 @@
 # N5ZY VHF Contest and State QSO Party Copilot
 
-A Python/tkinter dashboard for amateur radio VHF/UHF contest roving and state QSO party mobile operation. Integrates GPS tracking, multiple WSJT-X instances, contest logging (N1MM+/N3FJP), Victron SmartShunt bluetooth battery monitoring, APRS messaging, PSK Reporter, and voice alerts into a single application designed for hands-free mobile operation.
+**Repository:** https://github.com/rusk2ua/n5zy-copilot
+
+A Python/tkinter dashboard for amateur radio VHF/UHF contest roving and state QSO party mobile operation. Integrates GPS tracking, multiple WSJT-X instances, contest logging (N1MM+/N3FJP), Victron SmartShunt Bluetooth BLE battery monitoring, APRS messaging, PSK Reporter, and voice alerts into a single application designed for hands-free mobile operation.
 
 **Author:** Marcus, N5ZY, with full state QSO party coverage, RBN support, and other tweaks by Rus, K2UA
 
 ## Features
 
-- **GPS Tracking** - VK172 USB dongle, automatic grid square and county detection, grid boundary proximity alerts
+- **GPS Tracking** - Automatic grid square and county detection with grid boundary proximity alerts; cross-platform serial support (Windows COM ports, macOS `/dev/cu.*`, Linux `/dev/ttyUSB*`)
+- **GPS Auto-Detection** - Automatic port scanning for GPS USB devices (u-blox, Prolific, FTDI, CH340/CH9102); set `gps_port` to `"auto"` or specify a port manually
 - **GPS Time Sync** - Set system clock from GPS with safety guards (freshness check, offset limit, rate limiting)
 - **Multi-Radio WSJT-X** - Monitor up to 4 WSJT-X instances simultaneously via UDP, updates 'My Grid' automatically through AutoGrid
 - **Contest Logging** - N1MM+ (TCP/RoverQTH), N3FJP, and Log4OM integration with ADIF output
+- **County Tracking** - Continuous county detection on every GPS fix ensures `MY_CNTY` and RoverQTH are always accurate, even between grid transitions
 - **SMS Notifications** - Twilio SMS alerts for DX/New Grid, rover status broadcasts to subscriber list
 - **APRS** - APRS-IS messaging, position beaconing, nearby mobile station alerts with voice announcements
 - **PSK Reporter** - Band opening detection, Sporadic-E alerts, multi-hop Sp-E "PULL OVER!" alerts, priority alert aging
 - **RBN** - Reverse Beacon Network support in a dedicated tab with row coloring by SNR. Filters are supported by call sign, band (160-2 meters), and continent. The 200 most recent RBN spots are shown in the current view and the window can be paused and scrolled. All RBN spots are spooled to a user-configurable CSV file for later analysis. RBN connection is optional and can be enabled by a checkbox. It is disabled by default. 
 - **Priority Station Alerts** - DX! priority stations, DX2 (new DXCC entity), DX3 (new DXCC on band) with LoTW/cty.dat lookup, dynamic detection from ALL.TXT decodes
 - **QSY Advisor** - Station database to find who's active on which bands
-- **Voice Alerts** - Hands-free announcements for grid changes, QSOs, band openings, nearby stations
+- **Voice Alerts** - Hands-free announcements for grid changes, QSOs, band openings, nearby stations; per-contest voice alert profiles (QSO Party defaults to county_change + warnings only)
 - **Slack Integration** - Webhook notifications to multiple Slack channels
-- **Battery Monitor** - Victron SmartShunt via Bluetooth LE
+- **Battery Monitor** - Victron SmartShunt via Bluetooth LE with improved device discovery (detects by manufacturer ID, supports macOS BLE UUIDs)
 - **Contest Modes** - VHF Contest, 222 and Up, QSO Party (with county auto-detection)
 - **Super Check Partial** - Callsign lookup with QRZ.com fallback
 - **GPS Logger** - Track recording, waypoint annotations for rover scouting
@@ -27,12 +31,12 @@ A Python/tkinter dashboard for amateur radio VHF/UHF contest roving and state QS
 ## Requirements
 
 - Python 3.8+
-- Windows (uses tkinter, COM ports, pyttsx3 for TTS)
+- Windows, macOS, or Linux (uses tkinter, pyttsx3 for TTS)
 
 ## Installation
 
 ```bash
-git clone https://github.com/N5ZY/n5zy-copilot.git
+git clone https://github.com/rusk2ua/n5zy-copilot.git
 cd n5zy-copilot
 pip install -r requirements.txt
 ```
@@ -41,8 +45,14 @@ pip install -r requirements.txt
 
 ```bash
 pip install cryptography          # Credential encryption in settings.json
-pip install victron-ble bleak     # Victron battery monitoring
+pip install victron-ble bleak     # Victron battery monitoring via BLE
 ```
+
+### Platform notes
+
+- **macOS**: Prolific or CH340 USB-serial adapters may need a driver install. BLE uses UUIDs instead of MAC addresses — the discover scan will show you the correct identifier to use.
+- **Linux**: You may need to add your user to the `dialout` group for serial port access (`sudo usermod -aG dialout $USER`).
+- **Windows**: No additional setup needed for most GPS dongles (COM port auto-detected).
 
 ## Quick Start
 
@@ -64,18 +74,20 @@ Settings are stored in `config/settings.json` (not committed - contains credenti
 
 Key settings:
 - `my_call` - Your callsign
-- `gps_port` - GPS dongle COM port
+- `gps_port` - GPS port: `"auto"` for auto-detection, `"COM3"` on Windows, `"/dev/cu.usbserial-0001"` on macOS, `"/dev/ttyUSB0"` on Linux
 - `wsjt_instances` - Array of WSJT-X instances with name, log_path, and udp_port
 - `my_bands` - Bands you operate (used by Manual Entry, PSK Monitor, QSY Advisor)
 - `aprs_callsign` - Your APRS-IS callsign with SSID
 - `contest_logger` - `"n1mm"` or `"n3fjp"`
+- `victron_address` - Bluetooth address of SmartShunt (MAC on Windows/Linux, UUID on macOS)
+- `victron_key` - 32-char hex encryption key from VictronConnect (Settings → Product Info)
 
 ## Hardware
 
 This was built for a specific rover setup but should adapt to similar configurations:
 
-- **GPS**: VK172 USB dongle (9600 baud NMEA)
-- **Battery**: Victron SmartShunt via BLE
+- **GPS**: Any USB GPS dongle (VK172, u-blox, etc.) — auto-detected on all platforms
+- **Battery**: Victron SmartShunt via BLE (requires "Instant Readout" enabled in VictronConnect)
 - **Radios**: Icom IC-9700, IC-7610, IC-7300 running WSJT-X
 - **Antennas**: M2 beams, precision horn antennas (6m through 3cm)
 
@@ -215,6 +227,14 @@ print(f"{result.county_name} ({result.abbreviation})")  # "Oklahoma (OKL)"
 - **Load time**: All 60 KML files (3,462 regions) load in ~1.5 seconds
 - **Lookup time**: Sub-millisecond per query (typically 0.04-0.2ms) using STRtree spatial indexing
 - **Memory**: Moderate — all polygon geometries held in memory for fast lookups
+
+## Recent Changes
+
+- **Cross-platform GPS support** — Auto-detection of GPS serial ports on macOS and Linux in addition to Windows. Set `gps_port` to `"auto"` or specify a device path explicitly.
+- **County tracking fix** — GPS position callback now fires on every valid fix (not just grid transitions), ensuring `MY_CNTY` and N1MM+ RoverQTH update correctly when crossing county boundaries between grid lines.
+- **Improved BLE discovery** — Victron SmartShunt detection now uses manufacturer data ID (`0x02E1`) in addition to name matching. Lists all BLE devices when the SmartShunt isn't found, and handles macOS BLE UUIDs.
+- **Per-contest voice alerts** — Switching contest modes auto-applies appropriate voice alert profiles (QSO Party defaults to county_change + warnings only; VHF/222 Up/DX default to all alerts).
+- **RBN tab** — Reverse Beacon Network support with real-time spot display, SNR color coding, callsign/band/continent filtering, and CSV logging.
 
 ## Project Structure
 
