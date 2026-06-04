@@ -167,7 +167,7 @@ Contest-specific KML boundary files provide the correct **contest exchange abbre
 | Wisconsin QSO Party | WIQP | 1 | 72 counties |
 | Wyoming QSO Party | WYQP | 1 | 23 counties |
 | **7th Call Area QSO Party** | **7QP** | **7** | AZ, ID, MT, NV, OR, UT, WA, WY (state-prefixed abbreviations) |
-| **New England QSO Party** | **NEWE** | **1** | CT planning regions (state-prefixed abbreviations) |
+| **New England QSO Party** | **NEWE** | **6** | ME, NH, VT, MA, RI (state-prefixed abbreviations), and CT planning regions |
 
 #### KML Name Format
 
@@ -282,4 +282,4 @@ data/
 
 ## License
 
-Open source for amateur radio use. 73 de N5ZY!
+Open source for Amateur Radio use. 73!
